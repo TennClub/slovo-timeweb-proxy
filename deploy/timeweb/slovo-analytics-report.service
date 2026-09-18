@@ -1,0 +1,14 @@
+[Unit]
+Description=Send the daily Slovo analytics report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/slovo
+EnvironmentFile=/opt/slovo/.env
+ExecStart=/opt/slovo/.venv/bin/python /opt/slovo/analytics_bot.py --daily-report
+NoNewPrivileges=true
+PrivateTmp=true
+

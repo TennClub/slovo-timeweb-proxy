@@ -1,0 +1,18 @@
+[Unit]
+Description=Slovo Telegram Mini App API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/slovo
+EnvironmentFile=/opt/slovo/.env
+ExecStart=/opt/slovo/.venv/bin/uvicorn webapp:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

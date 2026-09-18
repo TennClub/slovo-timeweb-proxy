@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Slovo analytics report at 21:00 Moscow time
+
+[Timer]
+OnCalendar=*-*-* 21:00:00 Europe/Moscow
+Persistent=true
+Unit=slovo-analytics-report.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Slovo Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/slovo
+EnvironmentFile=/opt/slovo/.env
+ExecStart=/opt/slovo/.venv/bin/python /opt/slovo/slovo.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
