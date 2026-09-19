@@ -112,8 +112,6 @@ class CardInput(BaseModel):
     term: str = Field(min_length=1, max_length=250)
     translation: str = Field(min_length=1, max_length=500)
     transcription: str | None = Field(default=None, max_length=250)
-    example: str | None = Field(default=None, max_length=1000)
-    example_translation: str | None = Field(default=None, max_length=1000)
 
 
 class CardsCreate(BaseModel):
@@ -219,7 +217,7 @@ def folder_json(user_id: int, folder, counts: dict | None = None) -> dict:
 
 
 def card_json(card) -> dict:
-    return {key: card[key] for key in ("id", "term", "translation", "transcription", "example", "example_translation", "audio_url")}
+    return {key: card[key] for key in ("id", "term", "translation", "transcription", "audio_url")}
 
 
 def avatar_json(user_id: int, name: str = "") -> dict:
@@ -460,7 +458,7 @@ def create_cards(folder_id: int, body: CardsCreate, user: TelegramUser = Depends
     require_editor(user.id, folder_id)
     cached = db.request_result(user.id, f"cards_create:{folder_id}", body.request_id)
     if cached: return json.loads(cached)
-    items = [(x.term.strip(), x.translation.strip(), clean_optional(x.transcription), clean_optional(x.example), clean_optional(x.example_translation)) for x in body.items]
+    items = [(x.term.strip(), x.translation.strip(), clean_optional(x.transcription)) for x in body.items]
     duplicates = [item for item in items if db.duplicate(folder_id, item[0], item[1])]
     accepted = [item for item in items if not (body.skip_duplicates and db.duplicate(folder_id, item[0], item[1]))]
     if db.card_count(folder_id) + len(accepted) > MAX_CARDS_PER_FOLDER:
@@ -489,8 +487,7 @@ def update_card(card_id: int, body: CardUpdate, user: TelegramUser = Depends(cur
     if not card:
         raise HTTPException(404, "Card not found")
     require_editor(user.id, card["folder_id"])
-    values = {"term": body.term.strip(), "translation": body.translation.strip(), "transcription": clean_optional(body.transcription),
-              "example": clean_optional(body.example), "example_translation": clean_optional(body.example_translation)}
+    values = {"term": body.term.strip(), "translation": body.translation.strip(), "transcription": clean_optional(body.transcription)}
     for field, value in values.items():
         db.update_card(card_id, field, value)
     return {"ok": True, "card": card_json(db.card(user.id, card_id))}
@@ -667,7 +664,6 @@ def session_json(user_id: int, session_id: str) -> dict:
             "transcription": None if reverse else card["transcription"], "audio_url": None if reverse else card["audio_url"],
             "details_transcription": card["transcription"], "detail_term": card["term"],
             "detail_lang": folder["source_lang"], "detail_audio_url": card["audio_url"],
-            "example": card["example"], "example_translation": card["example_translation"],
             "study_format": session["study_format"], "mode": session["mode"].split(":",1)[0]}
 
 

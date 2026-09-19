@@ -279,9 +279,6 @@ summary { min-height: 30px; font-weight: 780; cursor: pointer; }
 .study-answer { padding-top: 22px; border-top: 1px solid var(--line); animation: reveal .18s ease-out; }
 .study-back { margin: 0 0 15px; font-size: clamp(25px, 7vw, 38px); font-weight: 790; line-height: 1.18; text-align: center; overflow-wrap: anywhere; }
 .study-actions { margin-top: auto; padding-top: 20px; }
-.example-box { min-width: 0; margin: 17px 0; padding: 15px 16px; border-left: 4px solid var(--purple); border-radius: 4px 16px 16px 4px; background: var(--surface-soft); text-align: start; }
-.example-box p { margin: 4px 0; overflow-wrap: anywhere; }
-.example-box small { display: block; margin-bottom: 8px; color: var(--muted); font-weight: 750; }
 .learning-details { margin: 16px 0 2px; padding: 0; overflow: hidden; background: var(--surface-soft); text-align: start; }
 .learning-details summary { display: flex; align-items: center; gap: 9px; padding: 14px 15px; color: var(--purple); list-style: none; }
 .learning-details summary::-webkit-details-marker { display: none; }
@@ -292,7 +289,6 @@ summary { min-height: 30px; font-weight: 780; cursor: pointer; }
 .learning-detail-row > span { grid-column: 1; color: var(--muted); font-size: 12px; font-weight: 700; }
 .learning-detail-row > b { grid-column: 1; overflow-wrap: anywhere; }
 .learning-detail-row .sound-button { grid-column: 2; grid-row: 1 / span 2; }
-.learning-details .example-box { margin: 12px 0 0; }
 .typing-panel { width: 100%; max-width: 540px; margin: 0 auto; }
 .typing-input { min-height: 54px !important; font-size: 18px !important; text-align: center; background: var(--bg) !important; }
 .answer-review { min-width: 0; margin: 17px 0; padding: 15px; border-radius: 17px; background: var(--surface-soft); text-align: start; }

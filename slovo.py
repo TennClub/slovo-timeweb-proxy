@@ -38,26 +38,6 @@ LANGUAGES = {
     "fr": "Français", "zh": "中文", "ar": "العربية",
 }
 
-_EXAMPLE_TEMPLATES = {
-    "en": "I am learning the word “{word}”.",
-    "ru": "Я изучаю слово «{word}».",
-    "es": "Estoy aprendiendo la palabra «{word}».",
-    "fr": "J’apprends le mot «{word}».",
-    "zh": "我正在学习“{word}”这个词。",
-    "ar": "أنا أتعلم كلمة «{word}».",
-}
-
-
-def learning_context(term, translation, source_lang='en', target_lang='ru'):
-    """Return a safe starter example in both folder languages.
-
-    User-entered examples always win. These deterministic sentences ensure that
-    an imported word is useful immediately, even while richer pronunciation
-    data is being fetched in the background.
-    """
-    source = _EXAMPLE_TEMPLATES.get(source_lang, _EXAMPLE_TEMPLATES["en"])
-    target = _EXAMPLE_TEMPLATES.get(target_lang, _EXAMPLE_TEMPLATES["en"])
-    return source.format(word=term), target.format(word=translation)
 TEXT = {
  "ru": {"menu":"<b>Slovo</b> — твои слова под рукой.\nДобавляйте слова вместе, учите в своём темпе.","folders":"📁 Мои папки","add":"➕ Добавить слова","learn":"📚 Учить","language":"🌐 Язык","back":"Назад","cancel":"Отмена","new_folder":"➕ Создать папку","no_folders":"Папок пока нет.","folder_name":"Как назвать папку?","source_lang":"Выберите первый язык папки.","target_lang":"Выберите второй язык папки.","words":"Слов","due":"К повторению","word_list":"Список слов","invite":"Пригласить","settings":"Настройки","study":"Учить","choose_folder":"Выберите папку.","choose_study":"Выберите направление обучения.","choose_mode":"Что будем учить?","due_mode":"Повторить нужное","all_mode":"Все слова","know":"Знаю","dont_know":"Не знаю","finish":"Закончить","next":"Дальше","correct_next":"Верно, дальше","mistake":"Ошибся","lang_saved":"Язык интерфейса изменён.","no_access":"Нет доступа.","session_gone":"Эта сессия уже недоступна.","question":"Слово {pos} из {total}","done":"<b>Готово!</b>\nПройдено слов: {total}.\nБез ошибок: {ok}.\nСтоит повторить: {bad}.","repeat_errors":"Повторить ошибки","more":"Ещё 10 слов","to_folder":"В папку"},
  "en": {"menu":"<b>Slovo</b> — your words at hand.\nAdd words together and learn at your own pace.","folders":"📁 My folders","add":"➕ Add words","learn":"📚 Learn","language":"🌐 Language","back":"Back","cancel":"Cancel","new_folder":"➕ Create folder","no_folders":"No folders yet.","folder_name":"What should the folder be called?","source_lang":"Choose the first language.","target_lang":"Choose the second language.","words":"Words","due":"Due","word_list":"Word list","invite":"Invite","settings":"Settings","study":"Learn","choose_folder":"Choose a folder.","choose_study":"Choose the study direction.","choose_mode":"What would you like to study?","due_mode":"Review due","all_mode":"All words","know":"I know","dont_know":"I don't know","finish":"Finish","next":"Next","correct_next":"Correct, next","mistake":"I was wrong","lang_saved":"Interface language changed.","no_access":"Access denied.","session_gone":"This session is no longer available.","question":"Word {pos} of {total}","done":"<b>Done!</b>\nWords studied: {total}.\nWithout mistakes: {ok}.\nWorth reviewing: {bad}.","repeat_errors":"Review mistakes","more":"10 more words","to_folder":"To folder"},
@@ -292,15 +272,6 @@ END;
 acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
             from catalog_data import seed_catalog
             seed_catalog(c)
-            # Older and catalogue cards receive a useful example immediately.
-            # Manually entered content is never replaced.
-            missing=c.execute('''SELECT c.id,c.term,c.translation,c.example,c.example_translation,
-f.source_lang,f.target_lang FROM cards c JOIN folders f ON f.id=c.folder_id
-WHERE c.example IS NULL OR trim(c.example)='' OR c.example_translation IS NULL OR trim(c.example_translation)='' ''').fetchall()
-            for row in missing:
-                example,translated=learning_context(row['term'],row['translation'],row['source_lang'],row['target_lang'])
-                c.execute("UPDATE cards SET example=COALESCE(NULLIF(trim(example),''),?),example_translation=COALESCE(NULLIF(trim(example_translation),''),?) WHERE id=?",
-                          (example,translated,row['id']))
 
     def user(self, tg_id, name="", telegram_avatar_url=None, ref_code='organic', acquisition_source='organic'):
         with self.conn() as c:
@@ -499,11 +470,8 @@ ORDER BY c.id LIMIT ? OFFSET ?''',params).fetchall()
             with self.conn() as c:
                 current=c.execute("SELECT COUNT(*) FROM cards WHERE folder_id=?",(f,)).fetchone()[0]
                 if current+len(items)>MAX_CARDS_PER_FOLDER:raise ValueError('folder_word_limit')
-                folder=c.execute("SELECT source_lang,target_lang FROM folders WHERE id=?",(f,)).fetchone()
                 for item in items:
                     term,tr=item[0],item[1]; extra=list(item[2:])+[None,None,None]
-                    example,example_translation=learning_context(term,tr,folder['source_lang'],folder['target_lang'])
-                    extra[1]=extra[1] or example; extra[2]=extra[2] or example_translation
                     cur=c.execute("INSERT INTO cards(folder_id,term,translation,transcription,example,example_translation,created_by) VALUES(?,?,?,?,?,?,?)",(f,term,tr,extra[0],extra[1],extra[2],u));inserted.append(cur.lastrowid)
         except sqlite3.IntegrityError as exc:
             if 'folder_word_limit' in str(exc):raise ValueError('folder_word_limit') from exc

@@ -99,15 +99,15 @@ def test_folder_accepts_at_most_50_words_atomically(tmp_path, monkeypatch):
     assert database.card_count(folder) == 50
 
 
-def test_card_transcription_examples_and_cached_audio(tmp_path, monkeypatch):
+def test_card_transcription_and_cached_audio(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "English", "en", "ru")
     database.add_cards(1, folder, [("apprehensive", "обеспокоенный")])
     card_id = database.cards(folder)[0]["id"]
-    payload = {"term": "apprehensive", "translation": "обеспокоенный", "transcription": "/ˌæprɪˈhensɪv/",
-               "example": "She felt apprehensive about the exam.", "example_translation": "Она переживала из-за экзамена."}
+    payload = {"term": "apprehensive", "translation": "обеспокоенный", "transcription": "/ˌæprɪˈhensɪv/"}
     updated = client.patch(f"/api/cards/{card_id}", json=payload)
-    assert updated.status_code == 200 and updated.json()["card"]["example"] == payload["example"]
+    assert updated.status_code == 200 and updated.json()["card"]["transcription"] == payload["transcription"]
+    assert "example" not in updated.json()["card"] and "example_translation" not in updated.json()["card"]
     database.update_card(card_id, "audio_url", "https://example.org/apprehensive.mp3")
     audio = client.post(f"/api/cards/{card_id}/pronunciation").json()
     assert audio["available"] and audio["audio_url"].endswith(".mp3")
@@ -241,15 +241,14 @@ def test_study_time_uses_active_seconds_not_wall_clock(tmp_path, monkeypatch):
     assert result["duration_seconds"] == 42
 
 
-def test_cards_receive_default_bilingual_context(tmp_path, monkeypatch):
+def test_study_payload_does_not_expose_usage_examples(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Context", "en", "ru")
     database.add_cards(1, folder, [("journey", "путешествие")])
     card = database.cards(folder)[0]
-    assert "journey" in card["example"]
-    assert "путешествие" in card["example_translation"]
+    assert card["example"] is None and card["example_translation"] is None
     session = client.post("/api/study", json={"folder_id": folder, "mode": "all"}).json()
-    assert session["example"] == card["example"]
+    assert "example" not in session and "example_translation" not in session
     assert session["detail_term"] == "journey"
 
 
@@ -273,8 +272,9 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     html = Path("web/index.html").read_text()
     assert "renderError" in js and "data-action=\"retry\"" in js
     assert "randomRound" in js and "repeatUnknown" in js
-    assert "Контекст и произношение" in js and "learning-details" in css
-    assert "styles.css?v=10" in html and "app.js?v=10" in html
+    assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
+    assert 'name="example"' not in js and 'name="example_translation"' not in js
+    assert "styles.css?v=11" in html and "app.js?v=11" in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css and "-webkit-line-clamp: 3" in css
     assert "Загружаем слова…" in html
