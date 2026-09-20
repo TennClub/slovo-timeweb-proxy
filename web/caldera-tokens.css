@@ -1,0 +1,75 @@
+@font-face {
+  font-family: "Caldera Display";
+  src: url("/static/fonts/RobotoCondensed-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Caldera Sans";
+  src: url("/static/fonts/Manrope-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+:root {
+  /* Canonical Caldera palette */
+  --color-ember: #fc5000;
+  --color-plasma-violet: #524ae9;
+  --color-sulfur: #f5f28e;
+  --color-limestone: #f7f6f2;
+  --color-pumice: #e2e2df;
+  --color-obsidian: #070607;
+  --color-chalk: #ffffff;
+
+  /* Functional colors: never used as decoration */
+  --color-success: #176b4d;
+  --color-success-soft: #d9eadf;
+  --color-danger: #a92f22;
+  --color-danger-soft: #f5d8d2;
+
+  /* Type */
+  --caldera-font-display: "Caldera Display", "Arial Narrow", sans-serif;
+  --caldera-font-body: "Caldera Sans", "Noto Sans", "Noto Sans Arabic", "PingFang SC", sans-serif;
+  --caldera-weight-body: 500;
+  --caldera-weight-display: 800;
+  --caldera-text-caption: 12px;
+  --caldera-text-body-small: 14px;
+  --caldera-text-body: 16px;
+  --caldera-leading-display: .96;
+  --caldera-leading-body: 1.55;
+  --caldera-tracking-display: .02em;
+  --caldera-tracking-label: .08em;
+
+  /* Radius */
+  --caldera-radius-small: 16px;
+  --caldera-radius-medium: 20px;
+  --caldera-radius-card: 40px;
+  --caldera-radius-input: 100px;
+  --caldera-radius-pill: 800px;
+
+  /* Spacing */
+  --caldera-space-1: 4px;
+  --caldera-space-2: 8px;
+  --caldera-space-3: 12px;
+  --caldera-space-4: 16px;
+  --caldera-space-5: 20px;
+  --caldera-space-6: 24px;
+  --caldera-space-8: 32px;
+  --caldera-space-10: 40px;
+
+  /* Motion */
+  --caldera-duration-fast: 120ms;
+  --caldera-duration-default: 200ms;
+  --caldera-ease-out: cubic-bezier(0, 0, .2, 1);
+  --caldera-ease-in-out: cubic-bezier(.4, 0, .2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --caldera-duration-fast: 0ms;
+    --caldera-duration-default: 0ms;
+  }
+}

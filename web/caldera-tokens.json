@@ -1,0 +1,34 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "name": "Slovo Caldera",
+  "version": "1.0.0",
+  "color": {
+    "ember": { "$type": "color", "$value": "#fc5000", "$description": "Primary actions and key metrics" },
+    "plasmaViolet": { "$type": "color", "$value": "#524ae9", "$description": "Hero halftone only" },
+    "sulfur": { "$type": "color", "$value": "#f5f28e", "$description": "Badges and category markers" },
+    "limestone": { "$type": "color", "$value": "#f7f6f2", "$description": "Cards, panels and dialogs" },
+    "pumice": { "$type": "color", "$value": "#e2e2df", "$description": "Application canvas" },
+    "obsidian": { "$type": "color", "$value": "#070607", "$description": "Text, icons and outlines" },
+    "chalk": { "$type": "color", "$value": "#ffffff", "$description": "Contrast text" },
+    "functional": {
+      "success": { "$type": "color", "$value": "#176b4d" },
+      "successSoft": { "$type": "color", "$value": "#d9eadf" },
+      "danger": { "$type": "color", "$value": "#a92f22" },
+      "dangerSoft": { "$type": "color", "$value": "#f5d8d2" }
+    }
+  },
+  "radius": {
+    "small": { "$type": "dimension", "$value": "16px" },
+    "medium": { "$type": "dimension", "$value": "20px" },
+    "cards": { "$type": "dimension", "$value": "40px" },
+    "inputs": { "$type": "dimension", "$value": "100px" },
+    "pills": { "$type": "dimension", "$value": "800px" }
+  },
+  "typography": {
+    "display": { "$type": "fontFamily", "$value": ["Caldera Display", "Arial Narrow", "sans-serif"] },
+    "body": { "$type": "fontFamily", "$value": ["Caldera Sans", "Noto Sans", "sans-serif"] },
+    "displayWeight": { "$type": "fontWeight", "$value": 800 },
+    "bodyWeight": { "$type": "fontWeight", "$value": 500 },
+    "displayTracking": { "$type": "dimension", "$value": "0.02em" }
+  }
+}
