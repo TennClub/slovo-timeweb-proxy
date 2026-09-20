@@ -183,6 +183,8 @@ p { text-wrap: pretty; }
 
 .folder-header h1 { max-width: 100%; margin: 6px 0 12px; font: var(--caldera-weight-display) clamp(42px, 10vw, 88px)/.92 var(--display); letter-spacing: .02em; text-transform: uppercase; overflow-wrap: anywhere; word-break: break-word; }
 .stats, .profile-stats, .result-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 20px; }
+.folder-header .mini-progress { margin-top: 18px; }
+.study-card > .simple-results { margin-bottom: 18px; }
 .stat { min-width: 0; padding: 16px; border: 0; border-radius: var(--radius-medium); background: var(--surface-soft); }
 .stat strong { display: block; font: var(--caldera-weight-display) clamp(28px, 6vw, 44px)/.95 var(--display); letter-spacing: .02em; overflow-wrap: anywhere; }
 .stat span { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.25; }

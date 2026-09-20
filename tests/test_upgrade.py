@@ -274,13 +274,15 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "randomRound" in js and "repeatUnknown" in js
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
-    assert "caldera-tokens.css?v=14" in html
-    assert "styles.css?v=14" in html and "app.js?v=14" in html
+    assert "caldera-tokens.css?v=15" in html
+    assert "styles.css?v=15" in html and "app.js?v=15" in html
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css
     assert "folder-header h1" in css and "word-break: break-word" in css
     assert "wordLengthClass" in js and "word-very-long" in css
+    assert ".folder-header .mini-progress { margin-top: 18px; }" in css
+    assert ".study-card > .simple-results { margin-bottom: 18px; }" in css
     assert "Загружаем слова…" in html
 
 
