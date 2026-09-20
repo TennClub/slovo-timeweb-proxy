@@ -274,7 +274,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "randomRound" in js and "repeatUnknown" in js
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
-    assert "styles.css?v=11" in html and "app.js?v=11" in html
+    assert "styles.css?v=12" in html and "app.js?v=12" in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css and "-webkit-line-clamp: 3" in css
     assert "Загружаем слова…" in html
@@ -308,6 +308,18 @@ def test_games_are_discoverable_from_home_and_learn_sections():
     assert "async function renderPlayHub" in js
     assert "personalGameFolders" in js and "slovoGameSets" in js
     assert "else if(a==='play-hub')" in js
+
+
+def test_caldera_design_tokens_and_accessible_viewport_are_shipped():
+    js = Path("web/app.js").read_text()
+    css = Path("web/styles.css").read_text()
+    html = Path("web/index.html").read_text()
+    for token in ("--ember: #fc5000", "--plasma: #524ae9", "--sulfur: #f5f28e", "--limestone: #f7f6f2", "--pumice: #e2e2df", "--obsidian: #070607"):
+        assert token in css
+    assert "radial-gradient(circle, var(--ember)" in css
+    assert "--radius-card: 40px" in css and "--radius-pill: 800px" in css
+    assert "user-scalable=no" not in html
+    assert "window.scrollTo({top:0,left:0,behavior:'instant'})" in js
 
 
 def teardown_module():
