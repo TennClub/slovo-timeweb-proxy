@@ -95,6 +95,10 @@ def test_11_onboarding_persists_and_completes(tmp_path, monkeypatch):
     assert client.patch("/api/onboarding", json={"step": 1, "usage_role": "teacher"}).json()["step"] == 1
     result = client.patch("/api/onboarding", json={"step": 5, "declared_source": "friend", "complete": True}).json()
     assert not result["required"] and result["usage_role"] == "teacher"
+    assert "declared_source" not in result
+    profile = client.get("/api/profile").json()["learning_profile"]
+    assert profile["usage_role"] == "teacher" and "declared_source" not in profile
+    assert database.user_profile(303)["declared_source"] == "friend"
 
 
 def test_12_official_set_is_locked_server_side(tmp_path, monkeypatch):
@@ -109,6 +113,12 @@ def test_13_teacher_can_create_class_and_student_can_join(tmp_path, monkeypatch)
     classroom = client.post("/api/classes", json={"name": "Group A", "language": "en"}).json()
     use(202, "Student"); joined = client.post(f"/api/classes/join/{classroom['invite_code']}")
     assert joined.status_code == 200
+    use(101, "Teacher")
+    detail = client.get(f"/api/classes/{classroom['id']}").json()
+    assert detail["url"].endswith(classroom["invite_code"])
+    assert [member["telegram_id"] for member in detail["members"]] == [202]
+    assert client.delete(f"/api/classes/{classroom['id']}/members/202").status_code == 200
+    assert client.get(f"/api/classes/{classroom['id']}").json()["members"] == []
 
 
 def test_14_non_teacher_cannot_create_class(tmp_path, monkeypatch):

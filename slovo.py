@@ -288,7 +288,6 @@ CREATE TABLE IF NOT EXISTS assignment_recipients (
             if 'campaign' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN campaign TEXT")
             if 'ref_code' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN ref_code TEXT")
             if 'acquired_at' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN acquired_at TEXT")
-            onboarding_is_new='onboarding_completed_at' not in user_cols
             for column,definition in {
                 'personal_ref_code':'TEXT','referrer_user_id':'INTEGER','declared_source':'TEXT',
                 'onboarding_started_at':'TEXT','onboarding_completed_at':'TEXT',
@@ -352,13 +351,19 @@ CREATE INDEX IF NOT EXISTS idx_assignment_recipients_user ON assignment_recipien
                 c.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES('001_product_analytics')")
             expansion_path=Path(__file__).resolve().parent/'migrations'/'002_product_expansion.sql'
             if expansion_path.exists():c.executescript(expansion_path.read_text(encoding='utf-8'))
+            learning_profile_path=Path(__file__).resolve().parent/'migrations'/'003_learning_profile.sql'
+            learning_profile_pending=not c.execute("SELECT 1 FROM schema_migrations WHERE version='003_learning_profile'").fetchone()
+            if learning_profile_pending:
+                # Every user present at rollout sees the questionnaire once. The
+                # migration marker prevents later restarts from asking again.
+                c.execute("UPDATE users SET onboarding_completed_at=NULL,onboarding_step=0")
+                if learning_profile_path.exists():c.executescript(learning_profile_path.read_text(encoding='utf-8'))
+                else:c.execute("INSERT INTO schema_migrations(version) VALUES('003_learning_profile')")
             from catalog_data import seed_catalog
             seed_catalog(c)
             # Users that existed before attribution was introduced are organic.
             c.execute("""UPDATE users SET acquisition_source='organic',campaign='organic',ref_code='organic',
 acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
-            if onboarding_is_new:
-                c.execute("UPDATE users SET onboarding_completed_at=COALESCE(created_at,CURRENT_TIMESTAMP),onboarding_step=5")
             for row in c.execute("SELECT telegram_id FROM users WHERE personal_ref_code IS NULL OR personal_ref_code='' ").fetchall():
                 c.execute("UPDATE users SET personal_ref_code=? WHERE telegram_id=?",(f"u{row['telegram_id']:x}",row['telegram_id']))
             # Backfill old cards without losing data: system topics are chunked at 30 words.

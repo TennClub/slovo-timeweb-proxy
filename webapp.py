@@ -284,8 +284,8 @@ def onboarding_json(user_id:int)->dict:
         try:return json.loads(row[key] or '[]')
         except (TypeError,ValueError):return []
     return {"required":not bool(row["onboarding_completed_at"]),"step":int(row["onboarding_step"] or 0),
-            "usage_role":row["usage_role"],"purposes":values("purposes"),"languages":values("learning_languages"),
-            "levels":values("levels"),"declared_source":row["declared_source"]}
+            "usage_role":row["usage_role"],"purposes":values("purposes"),
+            "languages":values("learning_languages"),"levels":values("levels")}
 
 
 def check_channel(user_id:int)->dict:
@@ -400,7 +400,7 @@ def home(user: TelegramUser = Depends(current_user)):
 def profile(timezone_offset: int = Query(0, ge=-840, le=840), user: TelegramUser = Depends(current_user)):
     db.set_timezone(user.id, timezone_offset)
     return {"summary": db.profile_stats(user.id), "week": db.weekly_stats(user.id, timezone_offset),
-            "avatar": avatar_json(user.id, user.display_name)}
+            "avatar": avatar_json(user.id, user.display_name),"learning_profile":onboarding_json(user.id)}
 
 
 @app.post("/api/profile/avatar")
@@ -833,7 +833,7 @@ def create_class(body:ClassCreate,user:TelegramUser=Depends(current_user)):
 def class_detail(class_id:int,user:TelegramUser=Depends(current_user)):
     classroom=require_class_teacher(user.id,class_id)
     with db.conn() as con:
-        members=[dict(row) for row in con.execute("SELECT u.telegram_id,u.name,cm.status,cm.joined_at FROM class_members cm JOIN users u ON u.telegram_id=cm.user_id WHERE cm.class_id=? ORDER BY cm.status,u.name",(class_id,))]
+        members=[dict(row) for row in con.execute("SELECT u.telegram_id,u.name,cm.status,cm.joined_at FROM class_members cm JOIN users u ON u.telegram_id=cm.user_id WHERE cm.class_id=? AND cm.status='active' ORDER BY u.name",(class_id,))]
         assignments=[dict(row) for row in con.execute("SELECT a.*,f.name folder_name,t.name topic_name FROM assignments a JOIN folders f ON f.id=a.folder_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id=? ORDER BY a.id DESC",(class_id,))]
         progress=[dict(row) for row in con.execute('''SELECT ar.assignment_id,ar.user_id,u.name,ar.status,ar.started_at,ar.completed_at,
 COUNT(DISTINCT p.card_id) learned_count,COUNT(DISTINCT cd.id) total_count,

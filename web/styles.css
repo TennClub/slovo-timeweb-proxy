@@ -51,6 +51,16 @@
 .topic-card.selected{border-color:var(--action-bg);background:var(--surface-soft)}
 .profile-extra{margin-top:16px;padding:20px;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--surface)}
 .profile-extra .secondary{width:100%}
+.learning-profile-list{display:grid;margin:0 0 18px;border-top:1px solid var(--line)}
+.learning-profile-list>div{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:14px 0;border-bottom:1px solid var(--line)}
+.learning-profile-list span{color:var(--muted)}
+.learning-profile-list strong{max-width:62%;text-align:right;overflow-wrap:anywhere}
+.onboarding-options.compact{gap:8px;margin:8px 0 4px}
+.onboarding-options.compact .onboarding-choice span{min-height:50px;padding:11px 14px;border-radius:var(--radius-medium)}
+.class-invite{display:grid;gap:16px;margin:20px 0;padding:20px;border:2px solid var(--action-bg);border-radius:var(--radius-card);background:var(--surface)}
+.class-invite h2,.class-invite p{margin:0}
+.class-invite p{margin-top:5px;color:var(--muted)}
+.class-invite .button-row{margin:0}
 .subscription-gate{margin-bottom:16px;padding:20px;border:2px solid var(--action-bg);border-radius:var(--radius-card);background:var(--surface)}
 
 @media (prefers-color-scheme: dark) {
