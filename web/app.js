@@ -1,4 +1,34 @@
-const tg=window.Telegram?.WebApp;
+function telegramLaunchParams(){
+  const hash=new URLSearchParams(location.hash.replace(/^#/,''));
+  const query=new URLSearchParams(location.search);
+  return {data:hash.get('tgWebAppData')||query.get('tgWebAppData')||'',theme:hash.get('tgWebAppThemeParams')||query.get('tgWebAppThemeParams')||''};
+}
+function telegramPostEvent(type,data={}){
+  const payload=JSON.stringify(data);
+  try{
+    if(window.TelegramWebviewProxy?.postEvent)return window.TelegramWebviewProxy.postEvent(type,payload);
+    if(window.external?.notify)return window.external.notify(JSON.stringify({eventType:type,eventData:data}));
+    if(window.parent!==window)return window.parent.postMessage(JSON.stringify({eventType:type,eventData:data}),'https://web.telegram.org');
+  }catch{}
+}
+function telegramFallback(){
+  const launch=telegramLaunchParams(),values=new URLSearchParams(launch.data);let user={};
+  try{user=JSON.parse(values.get('user')||'{}')}catch{}
+  return {
+    initData:launch.data,
+    initDataUnsafe:{user,start_param:values.get('start_param')||''},
+    colorScheme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light',
+    viewportStableHeight:window.innerHeight,
+    ready:()=>telegramPostEvent('web_app_ready'),
+    expand:()=>telegramPostEvent('web_app_expand'),
+    setHeaderColor:color=>telegramPostEvent('web_app_set_header_color',color.startsWith('#')?{color}:{color_key:color}),
+    setBackgroundColor:color=>telegramPostEvent('web_app_set_background_color',color.startsWith('#')?{color}:{color_key:color}),
+    openTelegramLink:url=>location.href=url,
+    onEvent:()=>{},
+    HapticFeedback:{notificationOccurred:type=>telegramPostEvent('web_app_trigger_haptic_feedback',{type:'notification',notification_type:type}),impactOccurred:style=>telegramPostEvent('web_app_trigger_haptic_feedback',{type:'impact',impact_style:style})}
+  };
+}
+const tg=window.Telegram?.WebApp||telegramFallback();
 if(tg){tg.ready();tg.expand();tg.setHeaderColor('bg_color');tg.setBackgroundColor('bg_color');}
 function syncTheme(){const localTheme=/^(localhost|127\.0\.0\.1)$/.test(location.hostname)?new URLSearchParams(location.search).get('theme'):null;document.documentElement.dataset.theme=localTheme||tg?.colorScheme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')}
 syncTheme();tg?.onEvent?.('themeChanged',syncTheme);

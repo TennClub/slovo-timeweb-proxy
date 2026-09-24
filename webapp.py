@@ -1300,7 +1300,7 @@ def repeat_game(round_id: str, errors_only: bool = False, user: TelegramUser = D
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store, max-age=0"})
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

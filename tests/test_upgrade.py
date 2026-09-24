@@ -267,7 +267,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=16" in html and "app.js?v=16" in html
+    assert "styles.css?v=17" in html and "app.js?v=17" in html
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css
