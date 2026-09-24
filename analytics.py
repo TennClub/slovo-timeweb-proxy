@@ -22,11 +22,14 @@ EVENTS = {
     "test_started", "test_completed", "game_started", "game_completed",
     "share_link_created", "shared_folder_opened", "shared_folder_copied",
     "assignment_opened", "assignment_completed",
+    "onboarding_started","onboarding_step_completed","onboarding_completed",
+    "channel_subscription_changed","class_created","class_joined","assignment_created",
 }
 MEANINGFUL_EVENTS = {
     "folder_created", "word_added", "test_started", "test_completed",
     "game_started", "game_completed", "shared_folder_copied",
     "assignment_completed",
+    "onboarding_completed","class_joined",
 }
 REF_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 EVENT_FIELDS = {
@@ -43,6 +46,13 @@ EVENT_FIELDS = {
     "shared_folder_copied": {"folder_id"},
     "assignment_opened": {"assignment_id"},
     "assignment_completed": {"assignment_id"},
+    "onboarding_started": set(),
+    "onboarding_step_completed": {"step"},
+    "onboarding_completed": set(),
+    "channel_subscription_changed": {"subscribed"},
+    "class_created": {"class_id"},
+    "class_joined": {"class_id"},
+    "assignment_created": {"assignment_id","class_id"},
 }
 
 
@@ -248,6 +258,24 @@ WHERE e.event_name=? AND e.user_id IN ({marks}) AND e.created_at>=u.created_at A
         local_now=datetime.now(self.tz); day=day or local_now.date(); window=self._day_window(day,cutoff)
         values=self.period(window.start,window.end); values.update({"date":day.isoformat(),"dau":values["active_users"],"wau":self.active_users(day,7),"mau":self.active_users(day,30),"activation":self.activation(day),"retention":self.retention(day)})
         return values
+
+    def product_metrics(self) -> dict:
+        """Current product funnels for the private analytics bot."""
+        exclusion, excluded = self._excluded_sql("u.telegram_id")
+        with self.db.conn() as con:
+            users=con.execute(f"SELECT COUNT(*) FROM users u WHERE 1=1{exclusion}",excluded).fetchone()[0]
+            onboarding=con.execute(f"SELECT COUNT(*) FROM users u WHERE onboarding_completed_at IS NOT NULL{exclusion}",excluded).fetchone()[0]
+            subscribed=con.execute(f"SELECT COUNT(*) FROM users u WHERE channel_subscribed=1{exclusion}",excluded).fetchone()[0]
+            teachers=con.execute(f"SELECT COUNT(*) FROM users u WHERE usage_role='teacher'{exclusion}",excluded).fetchone()[0]
+            classes=con.execute("SELECT COUNT(*) FROM classes").fetchone()[0]
+            joined=con.execute("SELECT COUNT(*) FROM class_members WHERE status='active'").fetchone()[0]
+            assignments=con.execute("SELECT COUNT(*) FROM assignments WHERE active=1").fetchone()[0]
+            completed=con.execute("SELECT COUNT(*) FROM assignment_recipients WHERE status='completed'").fetchone()[0]
+            recipients=con.execute("SELECT COUNT(*) FROM assignment_recipients").fetchone()[0]
+            referrals=con.execute(f"SELECT COUNT(*) FROM users u WHERE referrer_user_id IS NOT NULL{exclusion}",excluded).fetchone()[0]
+        return {"users":users,"onboarding":onboarding,"subscribed":subscribed,"teachers":teachers,
+                "classes":classes,"joined":joined,"assignments":assignments,"assignment_recipients":recipients,
+                "assignment_completed":completed,"referrals":referrals}
 
 
 def percent_change(current: int, previous: int) -> str:

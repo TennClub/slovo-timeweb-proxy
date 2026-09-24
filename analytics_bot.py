@@ -97,6 +97,21 @@ def sources_report(analytics: Analytics) -> str:
     return "\n".join(lines)
 
 
+def product_report(analytics: Analytics) -> str:
+    x=analytics.product_metrics()
+    pct=lambda value,total: round(value*100/total) if total else 0
+    return "\n".join([
+        "🧭 Продукт Slovo", "",
+        f"Онбординг завершили: {x['onboarding']}/{x['users']} — {pct(x['onboarding'],x['users'])}%",
+        f"Подписаны на канал: {x['subscribed']}/{x['users']} — {pct(x['subscribed'],x['users'])}%",
+        f"Реферальных регистраций: {x['referrals']}", "",
+        "👩‍🏫 Классы",
+        f"Преподавателей: {x['teachers']}", f"Классов: {x['classes']}", f"Активных учеников в классах: {x['joined']}",
+        f"Назначений: {x['assignments']}",
+        f"Выполнено: {x['assignment_completed']}/{x['assignment_recipients']} — {pct(x['assignment_completed'],x['assignment_recipients'])}%",
+    ])
+
+
 @router.message(Command("today"))
 async def cmd_today(message: Message):
     if await deny(message): return
@@ -127,17 +142,23 @@ async def cmd_sources(message: Message):
     _, analytics=services(); await message.answer(sources_report(analytics))
 
 
+@router.message(Command("product"))
+async def cmd_product(message: Message):
+    if await deny(message): return
+    _, analytics=services(); await message.answer(product_report(analytics))
+
+
 @router.message(Command("help", "start"))
 async def cmd_help(message: Message):
     if await deny(message): return
-    await message.answer("Команды Slovo Analytics:\n/today\n/yesterday\n/week\n/retention\n/sources\n/help")
+    await message.answer("Команды Slovo Analytics:\n/today\n/yesterday\n/week\n/retention\n/sources\n/product\n/help")
 
 
 async def send_daily(force: bool = False) -> bool:
     token, admin_id=settings(); database, analytics=services(); now=datetime.now(analytics.tz); key=now.date().isoformat()
     with database.conn() as con:
         if not force and con.execute("SELECT 1 FROM analytics_report_deliveries WHERE report_date=?",(key,)).fetchone(): return False
-    async with Bot(token) as bot: await bot.send_message(admin_id, today_report(analytics))
+    async with Bot(token) as bot: await bot.send_message(admin_id, today_report(analytics)+"\n\n"+product_report(analytics))
     with database.conn() as con:
         con.execute("INSERT OR REPLACE INTO analytics_report_deliveries(report_date,delivered_at,status) VALUES(?,?,'sent')",(key,iso_utc()))
     return True

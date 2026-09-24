@@ -67,36 +67,28 @@ def test_long_name_metadata_search_and_pagination(tmp_path, monkeypatch):
     assert [card["term"] for card in found["cards"]] == ["word 49"]
 
 
-def test_folder_accepts_at_most_50_words_atomically(tmp_path, monkeypatch):
+def test_folder_splits_words_into_topics_of_at_most_30(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Limit")
     first_49 = [{"term": f"word {i}", "translation": f"перевод {i}"} for i in range(49)]
     assert client.post(f"/api/folders/{folder}/cards", json={"items": first_49}).status_code == 201
 
-    too_many = client.post(
+    more = client.post(
         f"/api/folders/{folder}/cards",
         json={"items": [
             {"term": "word 49", "translation": "перевод 49"},
             {"term": "word 50", "translation": "перевод 50"},
         ]},
     )
-    assert too_many.status_code == 409
-    assert too_many.json()["detail"] == "folder_word_limit"
-    assert database.card_count(folder) == 49
+    assert more.status_code == 201
+    assert database.card_count(folder) == 51
+    assert [row["word_count"] for row in database.topics(1, folder)] == [30, 21]
 
     assert client.post(
         f"/api/folders/{folder}/cards",
         json={"items": [{"term": "word 49", "translation": "перевод 49"}]},
     ).status_code == 201
-    assert database.card_count(folder) == 50
-
-    blocked = client.post(
-        f"/api/folders/{folder}/cards",
-        json={"items": [{"term": "overflow", "translation": "лишнее"}]},
-    )
-    assert blocked.status_code == 409
-    assert blocked.json()["detail"] == "folder_word_limit"
-    assert database.card_count(folder) == 50
+    assert database.card_count(folder) == 51
 
 
 def test_card_transcription_and_cached_audio(tmp_path, monkeypatch):
@@ -275,7 +267,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=15" in html and "app.js?v=15" in html
+    assert "styles.css?v=16" in html and "app.js?v=16" in html
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css

@@ -32,6 +32,27 @@
   background: var(--bg);
 }
 
+/* Product expansion: story onboarding and folder topics, kept in Caldera. */
+.onboarding-shell{min-height:calc(var(--tg-viewport-stable-height,100vh) - 72px);display:flex;flex-direction:column;justify-content:center;gap:24px;max-width:640px;margin:auto;padding:28px 0}
+.onboarding-shell h1{font-size:clamp(42px,13vw,76px);line-height:.92;margin:0;max-width:11ch}
+.story-progress{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+.story-progress i{height:5px;background:var(--line);border-radius:99px;overflow:hidden}
+.story-progress i.active{background:var(--action-bg)}
+.onboarding-options{display:grid;gap:10px;margin:6px 0 24px}
+.onboarding-choice{cursor:pointer}
+.onboarding-choice input{position:absolute;opacity:0;pointer-events:none}
+.onboarding-choice span{display:flex;align-items:center;min-height:64px;padding:15px 18px;border:1px solid var(--line);border-radius:22px;background:var(--surface);font-weight:800;transition:border-color .18s ease,background .18s ease,transform .18s ease}
+.onboarding-choice input:checked+span{border-color:var(--action-bg);background:var(--surface-soft);transform:translateY(-1px)}
+.topic-strip{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(155px,1fr);gap:10px;overflow-x:auto;padding:2px 2px 10px;scrollbar-width:none}
+.topic-strip::-webkit-scrollbar{display:none}
+.topic-card{display:flex;min-height:92px;flex-direction:column;align-items:flex-start;justify-content:space-between;text-align:left;padding:16px;border:1px solid var(--line);border-radius:24px;background:var(--surface);color:var(--text)}
+.topic-card b{font-size:17px;line-height:1.15}
+.topic-card span{font-size:12px;color:var(--muted)}
+.topic-card.selected{border-color:var(--action-bg);background:var(--surface-soft)}
+.profile-extra{margin-top:16px;padding:20px;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--surface)}
+.profile-extra .secondary{width:100%}
+.subscription-gate{margin-bottom:16px;padding:20px;border:2px solid var(--action-bg);border-radius:var(--radius-card);background:var(--surface)}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: var(--color-obsidian);

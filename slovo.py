@@ -22,6 +22,7 @@ load_dotenv()
 
 PAGE_SIZE = 8
 MAX_CARDS_PER_FOLDER = 50
+MAX_CARDS_PER_TOPIC = 30
 ROLES = {"owner": "Владелец", "editor": "Редактор", "member": "Участник"}
 ROLE_LABELS = {
     "ru":{"owner":"Владелец","editor":"Редактор","member":"Участник"},
@@ -213,12 +214,71 @@ CREATE TABLE IF NOT EXISTS game_events (
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(round_id,event_id)
 );
+CREATE TABLE IF NOT EXISTS topics (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+ name TEXT NOT NULL,
+ is_system INTEGER NOT NULL DEFAULT 0 CHECK(is_system IN (0,1)),
+ position INTEGER NOT NULL DEFAULT 0,
+ created_by INTEGER NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(folder_id,name)
+);
+CREATE TABLE IF NOT EXISTS invite_claims (
+ token TEXT NOT NULL REFERENCES invitations(token) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+ status TEXT NOT NULL CHECK(status IN ('accepted','declined')),
+ responded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(token,user_id)
+);
+CREATE TABLE IF NOT EXISTS classes (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ teacher_user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+ name TEXT NOT NULL,
+ language TEXT NOT NULL DEFAULT 'en',
+ level TEXT,
+ description TEXT,
+ invite_code TEXT NOT NULL UNIQUE,
+ active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS class_members (
+ class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','left','removed')),
+ joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(class_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS assignments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+ created_by INTEGER NOT NULL REFERENCES users(telegram_id),
+ title TEXT NOT NULL,
+ folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+ topic_id INTEGER REFERENCES topics(id) ON DELETE SET NULL,
+ scope TEXT NOT NULL DEFAULT 'all' CHECK(scope IN ('all','selected')),
+ deadline TEXT,
+ description TEXT,
+ active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS assignment_recipients (
+ assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+ status TEXT NOT NULL DEFAULT 'assigned' CHECK(status IN ('assigned','started','completed')),
+ started_at TEXT,
+ completed_at TEXT,
+ PRIMARY KEY(assignment_id,user_id)
+);
 ''')
             user_cols={r[1] for r in c.execute("PRAGMA table_info(users)")}
             folder_cols={r[1] for r in c.execute("PRAGMA table_info(folders)")}
             card_cols={r[1] for r in c.execute("PRAGMA table_info(cards)")}
             progress_cols={r[1] for r in c.execute("PRAGMA table_info(progress)")}
             session_cols={r[1] for r in c.execute("PRAGMA table_info(sessions)")}
+            game_cols={r[1] for r in c.execute("PRAGMA table_info(game_rounds)")}
             if 'locale' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'ru'")
             if 'timezone_offset' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN timezone_offset INTEGER NOT NULL DEFAULT 0")
             if 'telegram_avatar_url' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN telegram_avatar_url TEXT")
@@ -228,11 +288,24 @@ CREATE TABLE IF NOT EXISTS game_events (
             if 'campaign' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN campaign TEXT")
             if 'ref_code' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN ref_code TEXT")
             if 'acquired_at' not in user_cols:c.execute("ALTER TABLE users ADD COLUMN acquired_at TEXT")
+            onboarding_is_new='onboarding_completed_at' not in user_cols
+            for column,definition in {
+                'personal_ref_code':'TEXT','referrer_user_id':'INTEGER','declared_source':'TEXT',
+                'onboarding_started_at':'TEXT','onboarding_completed_at':'TEXT',
+                'onboarding_step':'INTEGER NOT NULL DEFAULT 0','purposes':"TEXT NOT NULL DEFAULT '[]'",
+                'learning_languages':"TEXT NOT NULL DEFAULT '[]'",'levels':"TEXT NOT NULL DEFAULT '[]'",
+                'channel_subscribed':'INTEGER NOT NULL DEFAULT 0','channel_checked_at':'TEXT'
+            }.items():
+                if column not in user_cols:c.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
             if 'source_lang' not in folder_cols:c.execute("ALTER TABLE folders ADD COLUMN source_lang TEXT NOT NULL DEFAULT 'en'")
             if 'target_lang' not in folder_cols:c.execute("ALTER TABLE folders ADD COLUMN target_lang TEXT NOT NULL DEFAULT 'ru'")
+            if 'is_official' not in folder_cols:c.execute("ALTER TABLE folders ADD COLUMN is_official INTEGER NOT NULL DEFAULT 0")
             for column in ('transcription','example','example_translation','audio_url'):
                 if column not in card_cols:c.execute(f"ALTER TABLE cards ADD COLUMN {column} TEXT")
+            if 'topic_id' not in card_cols:c.execute("ALTER TABLE cards ADD COLUMN topic_id INTEGER")
             if 'first_learned_at' not in progress_cols:c.execute("ALTER TABLE progress ADD COLUMN first_learned_at TEXT")
+            for column,definition in {'success_count':'INTEGER NOT NULL DEFAULT 0','error_count':'INTEGER NOT NULL DEFAULT 0','distinct_days':'INTEGER NOT NULL DEFAULT 0','mastery_score':'INTEGER NOT NULL DEFAULT 0','mastery_status':"TEXT NOT NULL DEFAULT 'new'"}.items():
+                if column not in progress_cols:c.execute(f"ALTER TABLE progress ADD COLUMN {column} {definition}")
             additions={
                 'study_format': "TEXT NOT NULL DEFAULT 'cards'",
                 'started_at': 'TEXT', 'completed_at': 'TEXT',
@@ -242,6 +315,9 @@ CREATE TABLE IF NOT EXISTS game_events (
             }
             for column,definition in additions.items():
                 if column not in session_cols:c.execute(f"ALTER TABLE sessions ADD COLUMN {column} {definition}")
+            for column in ('topic_id','assignment_id'):
+                if column not in session_cols:c.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER")
+                if column not in game_cols:c.execute(f"ALTER TABLE game_rounds ADD COLUMN {column} INTEGER")
             c.execute("UPDATE sessions SET errors='[]' WHERE errors IS NULL OR errors='' ")
             c.execute("UPDATE sessions SET extra_counts='{}' WHERE extra_counts IS NULL OR extra_counts='' ")
             c.execute("UPDATE sessions SET started_at=COALESCE(started_at,created_at)")
@@ -256,22 +332,45 @@ CREATE INDEX IF NOT EXISTS idx_catalog_cards_set ON catalog_cards(set_slug,posit
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_set_subscriptions(user_id,active,set_slug);
 CREATE INDEX IF NOT EXISTS idx_game_rounds_user ON game_rounds(user_id,folder_id,status,updated_at);
 CREATE INDEX IF NOT EXISTS idx_game_events_round ON game_events(round_id,id);
-CREATE TRIGGER IF NOT EXISTS limit_cards_per_folder
+DROP TRIGGER IF EXISTS limit_cards_per_folder;
+CREATE TRIGGER IF NOT EXISTS limit_cards_per_topic
 BEFORE INSERT ON cards
-WHEN (SELECT COUNT(*) FROM cards WHERE folder_id=NEW.folder_id) >= 50
+WHEN NEW.topic_id IS NOT NULL AND (SELECT COUNT(*) FROM cards WHERE topic_id=NEW.topic_id) >= 30
 BEGIN
- SELECT RAISE(ABORT,'folder_word_limit');
+ SELECT RAISE(ABORT,'topic_word_limit');
 END;
+CREATE INDEX IF NOT EXISTS idx_topics_folder ON topics(folder_id,position,id);
+CREATE INDEX IF NOT EXISTS idx_cards_topic ON cards(topic_id,id);
+CREATE INDEX IF NOT EXISTS idx_classes_teacher ON classes(teacher_user_id,active,id);
+CREATE INDEX IF NOT EXISTS idx_class_members_user ON class_members(user_id,status,class_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_class ON assignments(class_id,active,id);
+CREATE INDEX IF NOT EXISTS idx_assignment_recipients_user ON assignment_recipients(user_id,status,assignment_id);
 ''')
             migration_path=Path(__file__).resolve().parent/'migrations'/'001_product_analytics.sql'
             if migration_path.exists():
                 c.executescript(migration_path.read_text(encoding='utf-8'))
                 c.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES('001_product_analytics')")
+            expansion_path=Path(__file__).resolve().parent/'migrations'/'002_product_expansion.sql'
+            if expansion_path.exists():c.executescript(expansion_path.read_text(encoding='utf-8'))
+            from catalog_data import seed_catalog
+            seed_catalog(c)
             # Users that existed before attribution was introduced are organic.
             c.execute("""UPDATE users SET acquisition_source='organic',campaign='organic',ref_code='organic',
 acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
-            from catalog_data import seed_catalog
-            seed_catalog(c)
+            if onboarding_is_new:
+                c.execute("UPDATE users SET onboarding_completed_at=COALESCE(created_at,CURRENT_TIMESTAMP),onboarding_step=5")
+            for row in c.execute("SELECT telegram_id FROM users WHERE personal_ref_code IS NULL OR personal_ref_code='' ").fetchall():
+                c.execute("UPDATE users SET personal_ref_code=? WHERE telegram_id=?",(f"u{row['telegram_id']:x}",row['telegram_id']))
+            # Backfill old cards without losing data: system topics are chunked at 30 words.
+            for folder in c.execute("SELECT id,owner_id FROM folders ORDER BY id").fetchall():
+                orphan_ids=[r[0] for r in c.execute("SELECT id FROM cards WHERE folder_id=? AND topic_id IS NULL ORDER BY id",(folder['id'],)).fetchall()]
+                for index in range(0,len(orphan_ids),MAX_CARDS_PER_TOPIC):
+                    name='Без темы' if index==0 else f"Без темы {index//MAX_CARDS_PER_TOPIC+1}"
+                    c.execute("INSERT OR IGNORE INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,?,1,?,?)",(folder['id'],name,index//MAX_CARDS_PER_TOPIC,folder['owner_id']))
+                    topic_id=c.execute("SELECT id FROM topics WHERE folder_id=? AND name=?",(folder['id'],name)).fetchone()[0]
+                    marks=','.join('?' for _ in orphan_ids[index:index+MAX_CARDS_PER_TOPIC])
+                    if marks:c.execute(f"UPDATE cards SET topic_id=? WHERE id IN ({marks})",[topic_id]+orphan_ids[index:index+MAX_CARDS_PER_TOPIC])
+            c.execute("UPDATE folders SET is_official=1 WHERE id IN (SELECT folder_id FROM catalog_sets)")
 
     def user(self, tg_id, name="", telegram_avatar_url=None, ref_code='organic', acquisition_source='organic'):
         with self.conn() as c:
@@ -280,6 +379,7 @@ acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
 ON CONFLICT(telegram_id) DO UPDATE SET name=excluded.name,
 telegram_avatar_url=COALESCE(excluded.telegram_avatar_url,users.telegram_avatar_url)''',
                       (tg_id,name,telegram_avatar_url,acquisition_source,ref_code,ref_code,datetime.now(timezone.utc).isoformat()))
+            c.execute("UPDATE users SET personal_ref_code=COALESCE(NULLIF(personal_ref_code,''),?) WHERE telegram_id=?",(f"u{tg_id:x}",tg_id))
             return existing is None
     def avatar(self,u):
         with self.conn() as c:return c.execute("SELECT custom_avatar_key,telegram_avatar_url FROM users WHERE telegram_id=?",(u,)).fetchone()
@@ -323,6 +423,29 @@ WHERE f.id=? AND m.user_id=?''',(f,u)).fetchone()
         with self.conn() as c:c.execute("UPDATE users SET locale=? WHERE telegram_id=?",(locale,u))
     def set_timezone(self,u,offset):
         with self.conn() as c:c.execute("UPDATE users SET timezone_offset=? WHERE telegram_id=?",(max(-840,min(840,int(offset))),u))
+    def user_profile(self,u):
+        with self.conn() as c:return c.execute("SELECT * FROM users WHERE telegram_id=?",(u,)).fetchone()
+    def save_onboarding(self,u,step,usage_role=None,purposes=None,languages=None,levels=None,declared_source=None,complete=False):
+        import json
+        with self.conn() as c:
+            c.execute('''UPDATE users SET onboarding_started_at=COALESCE(onboarding_started_at,CURRENT_TIMESTAMP),onboarding_step=?,
+usage_role=COALESCE(?,usage_role),purposes=COALESCE(?,purposes),learning_languages=COALESCE(?,learning_languages),
+levels=COALESCE(?,levels),declared_source=COALESCE(?,declared_source),onboarding_completed_at=CASE WHEN ? THEN COALESCE(onboarding_completed_at,CURRENT_TIMESTAMP) ELSE onboarding_completed_at END
+WHERE telegram_id=?''',(step,usage_role,json.dumps(purposes,ensure_ascii=False) if purposes is not None else None,json.dumps(languages,ensure_ascii=False) if languages is not None else None,json.dumps(levels,ensure_ascii=False) if levels is not None else None,declared_source,int(complete),u))
+    def referral_count(self,u):
+        with self.conn() as c:return c.execute("SELECT COUNT(*) FROM users WHERE referrer_user_id=?",(u,)).fetchone()[0]
+    def apply_referral(self,u,code):
+        if not code:return False
+        with self.conn() as c:
+            owner=c.execute("SELECT telegram_id FROM users WHERE personal_ref_code=?",(code,)).fetchone()
+            if not owner or owner[0]==u:return False
+            cur=c.execute("UPDATE users SET referrer_user_id=?,acquisition_source='referral',campaign=?,ref_code=? WHERE telegram_id=? AND referrer_user_id IS NULL",(owner[0],f"ref_{code}",f"ref_{code}",u));return bool(cur.rowcount)
+    def set_channel_state(self,u,subscribed):
+        with self.conn() as c:
+            c.execute("UPDATE users SET channel_subscribed=?,channel_checked_at=CURRENT_TIMESTAMP WHERE telegram_id=?",(int(bool(subscribed)),u))
+            if not subscribed:
+                c.execute("UPDATE user_set_subscriptions SET active=0,updated_at=CURRENT_TIMESTAMP WHERE user_id=?",(u,))
+                c.execute("DELETE FROM memberships WHERE user_id=? AND role='member' AND folder_id IN (SELECT folder_id FROM catalog_sets)",(u,))
     def request_result(self,u,operation,request_id):
         if not request_id:return None
         with self.conn() as c:
@@ -333,7 +456,38 @@ WHERE f.id=? AND m.user_id=?''',(f,u)).fetchone()
         with self.conn() as c:c.execute("INSERT OR IGNORE INTO request_deduplication(user_id,operation,request_id,response) VALUES(?,?,?,?)",(u,operation,request_id,response))
     def create_folder(self,u,name,source_lang='en',target_lang='ru'):
         with self.conn() as c:
-            cur=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(name,u,source_lang,target_lang)); f=cur.lastrowid;c.execute("INSERT INTO memberships VALUES(?,?,?)",(f,u,"owner"));return f
+            cur=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(name,u,source_lang,target_lang)); f=cur.lastrowid;c.execute("INSERT INTO memberships VALUES(?,?,?)",(f,u,"owner"));c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?, 'Без темы',1,0,?)",(f,u));return f
+    def topics(self,u,f):
+        with self.conn() as c:return c.execute('''SELECT t.*,COUNT(cd.id) word_count,SUM(CASE WHEN p.last_success IS NOT NULL THEN 1 ELSE 0 END) learned_count
+FROM topics t JOIN memberships m ON m.folder_id=t.folder_id AND m.user_id=? LEFT JOIN cards cd ON cd.topic_id=t.id
+LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=? WHERE t.folder_id=? GROUP BY t.id ORDER BY t.position,t.id''',(u,u,f)).fetchall()
+    def topic(self,u,topic_id):
+        with self.conn() as c:return c.execute("SELECT t.*,m.role FROM topics t JOIN memberships m ON m.folder_id=t.folder_id WHERE t.id=? AND m.user_id=?",(topic_id,u)).fetchone()
+    def create_topic(self,u,f,name):
+        with self.conn() as c:
+            position=c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM topics WHERE folder_id=?",(f,)).fetchone()[0]
+            cur=c.execute("INSERT INTO topics(folder_id,name,position,created_by) VALUES(?,?,?,?)",(f,name,position,u));return cur.lastrowid
+    def rename_topic(self,topic_id,name):
+        with self.conn() as c:c.execute("UPDATE topics SET name=? WHERE id=?",(name,topic_id))
+    def move_card(self,card_id,topic_id):
+        with self.conn() as c:
+            topic=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(topic_id,topic_id)).fetchone()
+            card=c.execute("SELECT folder_id FROM cards WHERE id=?",(card_id,)).fetchone()
+            if not topic or not card or topic['folder_id']!=card['folder_id']:raise ValueError('invalid_topic')
+            if topic['n']>=MAX_CARDS_PER_TOPIC:raise ValueError('topic_word_limit')
+            c.execute("UPDATE cards SET topic_id=? WHERE id=?",(topic_id,card_id))
+    def delete_topic(self,topic_id,target_topic_id=None):
+        with self.conn() as c:
+            row=c.execute("SELECT folder_id,is_system FROM topics WHERE id=?",(topic_id,)).fetchone()
+            if not row or row['is_system']:raise ValueError('system_topic')
+            count=c.execute("SELECT COUNT(*) FROM cards WHERE topic_id=?",(topic_id,)).fetchone()[0]
+            if count:
+                if not target_topic_id:raise ValueError('topic_not_empty')
+                target=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(target_topic_id,target_topic_id)).fetchone()
+                if not target or target['folder_id']!=row['folder_id']:raise ValueError('invalid_topic')
+                if target['n']+count>MAX_CARDS_PER_TOPIC:raise ValueError('topic_word_limit')
+                c.execute("UPDATE cards SET topic_id=? WHERE topic_id=?",(target_topic_id,topic_id))
+            c.execute("DELETE FROM topics WHERE id=?",(topic_id,))
     def catalog_categories(self):
         with self.conn() as c:return c.execute("SELECT * FROM catalog_categories ORDER BY position,slug").fetchall()
     def catalog_sets(self,u,category='',query=''):
@@ -397,12 +551,12 @@ FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER 
             game_rounds=c.execute("SELECT count(*) FROM game_rounds WHERE user_id=? AND status='completed'",(u,)).fetchone()[0]
             return {"folders":folders,"words":words,"learned":learned,"sessions":sessions,"game_rounds":game_rounds}
 
-    def create_game_round(self,round_id,u,f,game_type,snapshot,state):
+    def create_game_round(self,round_id,u,f,game_type,snapshot,state,topic_id=None,assignment_id=None):
         import json
         now=datetime.now(timezone.utc).isoformat()
         with self.conn() as c:
-            c.execute("INSERT INTO game_rounds(id,user_id,folder_id,game_type,snapshot,state,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                      (round_id,u,f,game_type,json.dumps(snapshot,ensure_ascii=False),json.dumps(state,ensure_ascii=False),now,now))
+            c.execute("INSERT INTO game_rounds(id,user_id,folder_id,game_type,snapshot,state,started_at,updated_at,topic_id,assignment_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (round_id,u,f,game_type,json.dumps(snapshot,ensure_ascii=False),json.dumps(state,ensure_ascii=False),now,now,topic_id,assignment_id))
 
     def game_round(self,u,round_id):
         with self.conn() as c:return c.execute("SELECT * FROM game_rounds WHERE id=? AND user_id=?",(round_id,u)).fetchone()
@@ -463,18 +617,31 @@ WHERE s.user_id=? AND date(e.created_at, ?)>=? GROUP BY s.id''',(u,modifier,firs
 LEFT JOIN progress p ON p.card_id=c.id AND p.user_id=? WHERE c.folder_id=? {where}
 ORDER BY c.id LIMIT ? OFFSET ?''',params).fetchall()
     def card(self,u,card_id):
-        with self.conn() as c:return c.execute("SELECT c.* FROM cards c JOIN memberships m ON m.folder_id=c.folder_id WHERE c.id=? AND m.user_id=?",(card_id,u)).fetchone()
-    def add_cards(self,u,f,items):
+        with self.conn() as c:return c.execute('''SELECT c.* FROM cards c WHERE c.id=? AND (
+EXISTS(SELECT 1 FROM memberships m WHERE m.folder_id=c.folder_id AND m.user_id=?) OR
+EXISTS(SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id WHERE ar.user_id=? AND a.folder_id=c.folder_id AND a.active=1))''',(card_id,u,u)).fetchone()
+    def add_cards(self,u,f,items,topic_id=None):
         inserted=[]
         try:
             with self.conn() as c:
-                current=c.execute("SELECT COUNT(*) FROM cards WHERE folder_id=?",(f,)).fetchone()[0]
-                if current+len(items)>MAX_CARDS_PER_FOLDER:raise ValueError('folder_word_limit')
+                explicit_topic=topic_id is not None
+                if explicit_topic:
+                    topic=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(topic_id,topic_id)).fetchone()
+                    if not topic or topic['folder_id']!=f:raise ValueError('invalid_topic')
+                    if topic['n']+len(items)>MAX_CARDS_PER_TOPIC:raise ValueError('topic_word_limit')
                 for item in items:
+                    if not explicit_topic:
+                        target=c.execute("SELECT t.id,COUNT(cd.id) n FROM topics t LEFT JOIN cards cd ON cd.topic_id=t.id WHERE t.folder_id=? GROUP BY t.id HAVING n<? ORDER BY t.is_system DESC,t.position,t.id LIMIT 1",(f,MAX_CARDS_PER_TOPIC)).fetchone()
+                        if not target:
+                            position=c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM topics WHERE folder_id=?",(f,)).fetchone()[0]
+                            base='Без темы';name=base if position==0 else f'{base} {position+1}'
+                            while c.execute("SELECT 1 FROM topics WHERE folder_id=? AND name=?",(f,name)).fetchone():position+=1;name=f'{base} {position+1}'
+                            topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,?,1,?,?)",(f,name,position,u)).lastrowid
+                        else:topic_id=target['id']
                     term,tr=item[0],item[1]; extra=list(item[2:])+[None,None,None]
-                    cur=c.execute("INSERT INTO cards(folder_id,term,translation,transcription,example,example_translation,created_by) VALUES(?,?,?,?,?,?,?)",(f,term,tr,extra[0],extra[1],extra[2],u));inserted.append(cur.lastrowid)
+                    cur=c.execute("INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,created_by) VALUES(?,?,?,?,?,?,?,?)",(f,topic_id,term,tr,extra[0],extra[1],extra[2],u));inserted.append(cur.lastrowid)
         except sqlite3.IntegrityError as exc:
-            if 'folder_word_limit' in str(exc):raise ValueError('folder_word_limit') from exc
+            if 'topic_word_limit' in str(exc):raise ValueError('topic_word_limit') from exc
             raise
         return inserted
     def duplicate(self,f,term,tr):
@@ -485,14 +652,23 @@ ORDER BY c.id LIMIT ? OFFSET ?''',params).fetchall()
     def delete_card(self,cid):
         with self.conn() as c:c.execute("DELETE FROM cards WHERE id=?",(cid,))
     def create_invite(self,u,f,role):
-        token='inv_'+secrets.token_urlsafe(18)
+        token='folder_'+secrets.token_urlsafe(18)
         with self.conn() as c:c.execute("INSERT INTO invitations(token,folder_id,role,created_by) VALUES(?,?,?,?)",(token,f,role,u))
         return token
     def join(self,u,token):
         with self.conn() as c:
             r=c.execute("SELECT * FROM invitations WHERE token=? AND revoked=0",(token,)).fetchone()
             if not r:return None
-            c.execute("INSERT INTO memberships VALUES(?,?,?) ON CONFLICT(folder_id,user_id) DO NOTHING",(r['folder_id'],u,r['role']));return r['folder_id']
+            c.execute("INSERT INTO memberships VALUES(?,?,?) ON CONFLICT(folder_id,user_id) DO UPDATE SET role=CASE WHEN memberships.role='owner' THEN 'owner' ELSE excluded.role END",(r['folder_id'],u,r['role']))
+            c.execute("INSERT INTO invite_claims(token,user_id,status) VALUES(?,?,'accepted') ON CONFLICT(token,user_id) DO UPDATE SET status='accepted',responded_at=CURRENT_TIMESTAMP",(token,u));return r['folder_id']
+    def invite_preview(self,u,token):
+        with self.conn() as c:return c.execute('''SELECT i.token,i.role,i.revoked,f.id folder_id,f.name folder_name,owner.name owner_name,
+(SELECT status FROM invite_claims ic WHERE ic.token=i.token AND ic.user_id=?) response
+FROM invitations i JOIN folders f ON f.id=i.folder_id JOIN users owner ON owner.telegram_id=f.owner_id WHERE i.token=?''',(u,token)).fetchone()
+    def decline_invite(self,u,token):
+        with self.conn() as c:
+            if not c.execute("SELECT 1 FROM invitations WHERE token=? AND revoked=0",(token,)).fetchone():return False
+            c.execute("INSERT INTO invite_claims(token,user_id,status) VALUES(?,?,'declined') ON CONFLICT(token,user_id) DO UPDATE SET status='declined',responded_at=CURRENT_TIMESTAMP",(token,u));return True
     def members(self,f):
         with self.conn() as c:return c.execute("SELECT u.telegram_id,u.name,u.custom_avatar_key,u.telegram_avatar_url,m.role FROM memberships m JOIN users u ON u.telegram_id=m.user_id WHERE m.folder_id=?",(f,)).fetchall()
     def set_member_role(self,f,u,role):
@@ -512,18 +688,21 @@ ORDER BY c.id LIMIT ? OFFSET ?''',params).fetchall()
         with self.conn() as c:c.execute("DELETE FROM folders WHERE id=?",(f,))
     def rename(self,f,n):
         with self.conn() as c:c.execute("UPDATE folders SET name=? WHERE id=?",(n,f))
-    def candidates(self,u,f,mode):
+    def candidates(self,u,f,mode,topic_id=None):
         with self.conn() as c:
             q="SELECT c.id FROM cards c LEFT JOIN progress p ON p.card_id=c.id AND p.user_id=? WHERE c.folder_id=?"
+            params=[u,f]
+            if topic_id is not None:q+=" AND c.topic_id=?";params.append(topic_id)
             if mode.startswith('due'): q+=" AND (p.card_id IS NULL OR p.due_date IS NULL OR p.due_date<=?) ORDER BY RANDOM()"
             elif mode.startswith('errors'):
-                q+=" AND EXISTS (SELECT 1 FROM study_events e WHERE e.user_id=? AND e.card_id=c.id AND e.correct=0 AND e.id=(SELECT MAX(e2.id) FROM study_events e2 WHERE e2.user_id=e.user_id AND e2.card_id=e.card_id)) ORDER BY RANDOM()";return [r[0] for r in c.execute(q,(u,f,u)).fetchall()]
+                q+=" AND EXISTS (SELECT 1 FROM study_events e WHERE e.user_id=? AND e.card_id=c.id AND e.correct=0 AND e.id=(SELECT MAX(e2.id) FROM study_events e2 WHERE e2.user_id=e.user_id AND e2.card_id=e.card_id)) ORDER BY RANDOM()";params.append(u);return [r[0] for r in c.execute(q,params).fetchall()]
             else:q+=" ORDER BY RANDOM()"
-            return [r[0] for r in c.execute(q,(u,f,date.today().isoformat()) if mode.startswith('due') else (u,f)).fetchall()]
-    def save_session(self,sid,u,f,mode,queue,study_format='cards',timezone_offset=0):
+            if mode.startswith('due'):params.append(date.today().isoformat())
+            return [r[0] for r in c.execute(q,params).fetchall()]
+    def save_session(self,sid,u,f,mode,queue,study_format='cards',timezone_offset=0,topic_id=None,assignment_id=None):
         import json
         now=datetime.now(timezone.utc).isoformat()
-        with self.conn() as c:c.execute("INSERT INTO sessions(id,user_id,folder_id,mode,queue,current_card,study_format,started_at,last_activity_at,timezone_offset) VALUES(?,?,?,?,?,?,?,?,?,?)",(sid,u,f,mode,json.dumps(queue),queue[0] if queue else None,study_format,now,now,max(-840,min(840,int(timezone_offset)))))
+        with self.conn() as c:c.execute("INSERT INTO sessions(id,user_id,folder_id,mode,queue,current_card,study_format,started_at,last_activity_at,timezone_offset,topic_id,assignment_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(sid,u,f,mode,json.dumps(queue),queue[0] if queue else None,study_format,now,now,max(-840,min(840,int(timezone_offset))),topic_id,assignment_id))
     def session(self,u,sid):
         with self.conn() as c:return c.execute("SELECT * FROM sessions WHERE id=? AND user_id=?",(sid,u)).fetchone()
     def answer(self,sid,card_id,success,mode,answer_text=None):
@@ -552,11 +731,12 @@ ORDER BY c.id LIMIT ? OFFSET ?''',params).fetchall()
     def _progress(self,c,u,cid,success,had_error):
         p=c.execute("SELECT * FROM progress WHERE user_id=? AND card_id=?",(u,cid)).fetchone(); today=date.today()
         if not success:
-            c.execute("INSERT INTO progress(user_id,card_id,level,due_date,last_success) VALUES(?,?,0,?,NULL) ON CONFLICT(user_id,card_id) DO UPDATE SET level=0,due_date=excluded.due_date,last_success=NULL",(u,cid,today.isoformat()));return
+            c.execute("INSERT INTO progress(user_id,card_id,level,due_date,last_success,error_count,mastery_status) VALUES(?,?,0,?,NULL,1,'learning') ON CONFLICT(user_id,card_id) DO UPDATE SET level=0,due_date=excluded.due_date,last_success=NULL,error_count=progress.error_count+1,mastery_score=MAX(0,progress.mastery_score-15),mastery_status='learning'",(u,cid,today.isoformat()));return
         level=0 if not p else p['level']; level=level if had_error else min(level+1,len(INTERVALS))
         days=1 if had_error else INTERVALS[max(level-1,0)]
         learned_at=datetime.now(timezone.utc).isoformat()
         c.execute("INSERT INTO progress(user_id,card_id,level,due_date,last_success,first_learned_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,card_id) DO UPDATE SET level=excluded.level,due_date=excluded.due_date,last_success=excluded.last_success,first_learned_at=COALESCE(progress.first_learned_at,excluded.first_learned_at)",(u,cid,level,(today+timedelta(days=days)).isoformat(),today.isoformat(),learned_at))
+        c.execute("UPDATE progress SET success_count=success_count+1,distinct_days=(SELECT COUNT(DISTINCT date(created_at)) FROM study_events WHERE user_id=? AND card_id=?),mastery_score=MIN(100,mastery_score+?),mastery_status=CASE WHEN success_count+1>=5 AND distinct_days>=2 AND mastery_score+?>=80 THEN 'mastered' WHEN success_count+1>=2 THEN 'familiar' ELSE 'learning' END WHERE user_id=? AND card_id=?",(u,cid,20 if not had_error else 8,20 if not had_error else 8,u,cid))
     def advance(self,sid):
         import json
         with self.conn() as c:
@@ -584,17 +764,19 @@ def language_rows(prefix,exclude=None,back='menu'):
     rows=[tuple(items[i:i+2]) for i in range(0,len(items),2)]
     rows.append((("‹",back),))
     return rows
-def app_button(u):
+def app_button(u,payload=''):
     webapp_url=os.getenv('WEBAPP_URL','').strip()
     if webapp_url:
-        return InlineKeyboardButton(text=tr(u,'open_app'),web_app=WebAppInfo(url=webapp_url))
+        separator='&' if '?' in webapp_url else '?'
+        url=webapp_url+(f"{separator}start_param={payload}" if payload else '')
+        return InlineKeyboardButton(text=tr(u,'open_app'),web_app=WebAppInfo(url=url))
     username=os.getenv('BOT_USERNAME','').lstrip('@')
     if username:
         return InlineKeyboardButton(text=tr(u,'open_app'),url=f'https://t.me/{username}?startapp')
     return InlineKeyboardButton(text=tr(u,'open_app'),callback_data='menu')
-def MENU(u):
+def MENU(u,payload=''):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [app_button(u)],
+        [app_button(u,payload)],
         [InlineKeyboardButton(text=tr(u,'profile'),callback_data='profile')],
     ])
 async def edit_or_send(event,text,markup=None):
@@ -603,22 +785,19 @@ async def edit_or_send(event,text,markup=None):
         except Exception: await event.message.answer(text,reply_markup=markup)
         await event.answer()
     else: await event.answer(text,reply_markup=markup)
-async def menu(event):
+async def menu(event,payload=''):
     u=event.from_user.id
-    await edit_or_send(event,tr(u,'shell_welcome'),MENU(u))
+    await edit_or_send(event,tr(u,'shell_welcome'),MENU(u,payload))
 def can(role,edit=False):return role in ({"owner","editor"} if edit else ROLES)
 
 @router.message(CommandStart())
 async def start(m:Message, command:CommandObject):
     raw_arg=(command.args or '').strip()
-    referral='organic' if raw_arg.startswith('inv_') else normalize_ref(raw_arg)
+    referral='organic' if raw_arg.startswith(('inv_','folder_','class_','ref_')) else normalize_ref(raw_arg)
     created=db.user(m.from_user.id,m.from_user.full_name,ref_code=referral,acquisition_source=source_for_ref(referral))
     if created: analytics.safe_track(m.from_user.id,'registration_completed',idempotency_key=f'registration:{m.from_user.id}')
-    if raw_arg.startswith('inv_'):
-        f=db.join(m.from_user.id,raw_arg)
-        if f: analytics.safe_track(m.from_user.id,'shared_folder_opened',{'folder_id':f},idempotency_key=f'shared-open:{m.from_user.id}:{raw_arg}')
-        await m.answer(tr(m.from_user.id,'joined') if f else tr(m.from_user.id,'invite_invalid'))
-    await menu(m)
+    if created and raw_arg.startswith('ref_'):db.apply_referral(m.from_user.id,raw_arg[4:])
+    await menu(m,raw_arg if raw_arg.startswith(('inv_','folder_','class_')) else '')
 @router.message(Command('menu'))
 async def cmd_menu(m):db.clear_draft(m.from_user.id);await menu(m)
 @router.message(Command('cancel'))

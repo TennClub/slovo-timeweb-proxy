@@ -9,6 +9,7 @@ import os
 import random
 import re
 import secrets
+import sqlite3
 import time
 import unicodedata
 from io import BytesIO
@@ -27,7 +28,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 from analytics import Analytics, normalize_ref, source_for_ref
-from slovo import DB, LANGUAGES, MAX_CARDS_PER_FOLDER
+from slovo import DB, LANGUAGES, MAX_CARDS_PER_FOLDER, MAX_CARDS_PER_TOPIC
 
 load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
@@ -82,11 +83,14 @@ def current_user(x_telegram_init_data: str | None = Header(default=None),
         user = TelegramUser(id=int(os.getenv("DEV_TELEGRAM_USER_ID", "1")), first_name=os.getenv("DEV_TELEGRAM_USER_NAME", "Demo"))
     else:
         raise HTTPException(401, "Open Slovo from Telegram")
-    raw_ref = "organic" if (x_slovo_start_param or "").startswith("inv_") else x_slovo_start_param
+    start_param=(x_slovo_start_param or "").strip()
+    raw_ref = "organic" if start_param.startswith(("inv_","folder_","class_","ref_")) else start_param
     ref = normalize_ref(raw_ref)
     created = db.user(user.id, user.display_name, user.photo_url, ref, source_for_ref(ref))
     if created:
         Analytics(db).safe_track(user.id, "registration_completed", idempotency_key=f"registration:{user.id}")
+    if created and start_param.startswith("ref_"):
+        db.apply_referral(user.id,start_param[4:])
     return user
 
 
@@ -116,6 +120,7 @@ class CardInput(BaseModel):
 
 class CardsCreate(BaseModel):
     items: list[CardInput] = Field(min_length=1, max_length=200)
+    topic_id: int | None = None
     skip_duplicates: bool = True
     request_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
 
@@ -130,11 +135,11 @@ class LocaleUpdate(BaseModel):
 
 
 class InviteCreate(BaseModel):
-    role: Literal["editor", "member"] = "member"
+    role: Literal["editor", "member", "viewer"] = "viewer"
 
 
 class MemberUpdate(BaseModel):
-    role: Literal["editor", "member"]
+    role: Literal["editor", "member", "viewer"]
 
 
 class StudyCreate(BaseModel):
@@ -143,6 +148,8 @@ class StudyCreate(BaseModel):
     direction: Literal["fwd", "rev"] = "fwd"
     study_format: Literal["cards", "typing"] = "cards"
     timezone_offset: int = Field(default=0, ge=-840, le=840)
+    topic_id: int | None = None
+    assignment_id: int | None = None
 
 
 class StudyAnswer(BaseModel):
@@ -159,6 +166,49 @@ class GameCreate(BaseModel):
     folder_id: int
     game_type: Literal["match", "listen", "build"]
     card_ids: list[int] | None = Field(default=None, max_length=10)
+    topic_id: int | None = None
+    assignment_id: int | None = None
+
+class TopicCreate(BaseModel):
+    name: str = Field(min_length=1,max_length=100)
+
+class TopicUpdate(BaseModel):
+    name: str = Field(min_length=1,max_length=100)
+
+class TopicDelete(BaseModel):
+    target_topic_id: int | None = None
+
+class CardMove(BaseModel):
+    topic_id: int
+
+class OnboardingUpdate(BaseModel):
+    step: int = Field(ge=1,le=5)
+    usage_role: Literal['student','teacher','self'] | None = None
+    purposes: list[str] | None = Field(default=None,max_length=8)
+    languages: list[str] | None = Field(default=None,max_length=12)
+    levels: list[str] | None = Field(default=None,max_length=12)
+    declared_source: str | None = Field(default=None,max_length=80)
+    complete: bool = False
+
+class ClassCreate(BaseModel):
+    name: str = Field(min_length=1,max_length=120)
+    language: str = Field(default='en',max_length=12)
+    level: str | None = Field(default=None,max_length=40)
+    description: str | None = Field(default=None,max_length=500)
+
+class ClassUpdate(BaseModel):
+    name: str | None = Field(default=None,min_length=1,max_length=120)
+    language: str | None = Field(default=None,max_length=12)
+    level: str | None = Field(default=None,max_length=40)
+    description: str | None = Field(default=None,max_length=500)
+
+class AssignmentCreate(BaseModel):
+    title: str = Field(min_length=1,max_length=160)
+    folder_id: int
+    topic_id: int | None = None
+    student_ids: list[int] | None = Field(default=None,max_length=200)
+    deadline: str | None = Field(default=None,max_length=40)
+    description: str | None = Field(default=None,max_length=1000)
 
 
 class GameAction(BaseModel):
@@ -182,6 +232,11 @@ def require_language(code: str) -> str:
 
 def require_folder(user_id: int, folder_id: int):
     folder = db.folder(user_id, folder_id)
+    if not folder:
+        with db.conn() as con:
+            folder=con.execute('''SELECT f.*,'member' role,cs.slug set_slug,cs.category_slug,cs.description,cs.icon set_icon
+FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id JOIN folders f ON f.id=a.folder_id
+LEFT JOIN catalog_sets cs ON cs.folder_id=f.id WHERE ar.user_id=? AND a.folder_id=? AND a.active=1 LIMIT 1''',(user_id,folder_id)).fetchone()
     if not folder:
         raise HTTPException(404, "Folder not found")
     return folder
@@ -217,7 +272,37 @@ def folder_json(user_id: int, folder, counts: dict | None = None) -> dict:
 
 
 def card_json(card) -> dict:
-    return {key: card[key] for key in ("id", "term", "translation", "transcription", "audio_url")}
+    keys=set(card.keys())
+    result={key: card[key] for key in ("id", "term", "translation", "transcription", "audio_url")}
+    result["topic_id"]=card["topic_id"] if "topic_id" in keys else None
+    return result
+
+
+def onboarding_json(user_id:int)->dict:
+    row=db.user_profile(user_id)
+    def values(key):
+        try:return json.loads(row[key] or '[]')
+        except (TypeError,ValueError):return []
+    return {"required":not bool(row["onboarding_completed_at"]),"step":int(row["onboarding_step"] or 0),
+            "usage_role":row["usage_role"],"purposes":values("purposes"),"languages":values("learning_languages"),
+            "levels":values("levels"),"declared_source":row["declared_source"]}
+
+
+def check_channel(user_id:int)->dict:
+    channel=os.getenv("SLOVO_CHANNEL_ID","").strip(); url=os.getenv("SLOVO_CHANNEL_URL","").strip()
+    if not channel or not os.getenv("BOT_TOKEN",""):
+        return {"configured":False,"subscribed":True,"url":url}
+    try:
+        endpoint=f"https://api.telegram.org/bot{os.getenv('BOT_TOKEN')}/getChatMember?chat_id={quote(channel)}&user_id={user_id}"
+        with urlopen(Request(endpoint,headers={"User-Agent":"Slovo/1"}),timeout=6) as response:data=json.load(response)
+        member=data.get("result",{});status=member.get("status")
+        subscribed=status in {"creator","administrator","member"} or (status=="restricted" and member.get("is_member"))
+        old=bool(db.user_profile(user_id)["channel_subscribed"]);db.set_channel_state(user_id,subscribed)
+        if old!=subscribed:
+            track(user_id,"channel_subscription_changed",{"subscribed":subscribed},idempotency_key=f"channel:{user_id}:{int(subscribed)}:{int(time.time()//3600)}")
+        return {"configured":True,"subscribed":bool(subscribed),"url":url}
+    except (HTTPError,URLError,TimeoutError,ValueError,OSError):
+        row=db.user_profile(user_id);return {"configured":True,"subscribed":bool(row["channel_subscribed"]),"url":url,"check_error":True}
 
 
 def avatar_json(user_id: int, name: str = "") -> dict:
@@ -266,11 +351,29 @@ def health():
 @app.get("/api/bootstrap")
 def bootstrap(user: TelegramUser = Depends(current_user)):
     """Small critical-path payload; folders and profile load independently."""
+    channel=check_channel(user.id);profile=db.user_profile(user.id)
     return {
         "user": {"id": user.id, "name": user.display_name, "username": user.username,
                  "avatar": avatar_json(user.id, user.display_name)},
-        "locale": db.locale(user.id), "languages": LANGUAGES,
+        "locale": db.locale(user.id), "languages": LANGUAGES,"onboarding":onboarding_json(user.id),
+        "channel":channel,"referral":{"code":profile["personal_ref_code"],"count":db.referral_count(user.id),
+        "url":f"https://t.me/{os.getenv('BOT_USERNAME','LangSlovo_Bot').lstrip('@')}?start=ref_{profile['personal_ref_code']}"},
     }
+
+
+@app.patch("/api/onboarding")
+def update_onboarding(body:OnboardingUpdate,user:TelegramUser=Depends(current_user)):
+    before=onboarding_json(user.id)
+    if not before["step"]:track(user.id,"onboarding_started",idempotency_key=f"onboarding-start:{user.id}")
+    db.save_onboarding(user.id,body.step,body.usage_role,body.purposes,body.languages,body.levels,body.declared_source,body.complete)
+    track(user.id,"onboarding_step_completed",{"step":body.step},idempotency_key=f"onboarding-step:{user.id}:{body.step}")
+    if body.complete:track(user.id,"onboarding_completed",idempotency_key=f"onboarding-complete:{user.id}")
+    return onboarding_json(user.id)
+
+
+@app.post("/api/channel/check")
+def channel_check(user:TelegramUser=Depends(current_user)):
+    return check_channel(user.id)
 
 
 @app.post("/api/analytics/open")
@@ -287,8 +390,10 @@ def home(user: TelegramUser = Depends(current_user)):
     sets = [catalog_set_json(row) for row in db.catalog_sets(user.id)]
     categories = [dict(row) for row in db.catalog_categories()]
     starters = [item for item in sets if item["slug"] in {"introductions", "airport", "work-emails"}]
+    channel=check_channel(user.id)
+    for item in starters:item["locked"]=not channel["subscribed"]
     return {"folders": folders, "due_count": due, "estimated_minutes": math.ceil(due / 3) if due else 0,
-            "catalog_categories": categories, "starter_sets": starters}
+            "catalog_categories": categories, "starter_sets": starters,"channel":channel}
 
 
 @app.get("/api/profile")
@@ -360,8 +465,9 @@ def catalog(category: str = Query("", max_length=40), q: str = Query("", max_len
     allowed = {item["slug"] for item in categories}
     if category and category not in allowed:
         raise HTTPException(422, "Unknown category")
-    return {"categories": categories,
-            "sets": [catalog_set_json(row) for row in db.catalog_sets(user.id, category, q.strip())]}
+    channel=check_channel(user.id);sets=[catalog_set_json(row) for row in db.catalog_sets(user.id, category, q.strip())]
+    for item in sets:item["locked"]=not channel["subscribed"]
+    return {"categories": categories,"sets":sets,"channel":channel}
 
 
 @app.get("/api/catalog/{slug}")
@@ -370,12 +476,14 @@ def catalog_detail(slug: str, user: TelegramUser = Depends(current_user)):
     if not row:
         raise HTTPException(404, "Slovo set not found")
     result = catalog_set_json(row)
+    result["locked"]=not check_channel(user.id)["subscribed"]
     result["cards"] = [card_json(card) for card in db.catalog_cards(slug)]
     return result
 
 
 @app.post("/api/catalog/{slug}/attach")
 def attach_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
+    if not check_channel(user.id)["subscribed"]:raise HTTPException(403,"channel_subscription_required")
     folder_id = db.subscribe_set(user.id, slug)
     if not folder_id:
         raise HTTPException(404, "Slovo set not found")
@@ -392,6 +500,7 @@ def detach_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
 
 @app.post("/api/catalog/{slug}/copy", status_code=201)
 def copy_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
+    if not check_channel(user.id)["subscribed"]:raise HTTPException(403,"channel_subscription_required")
     folder_id = db.copy_catalog_set(user.id, slug)
     if not folder_id:
         raise HTTPException(404, "Slovo set not found")
@@ -418,9 +527,11 @@ def create_folder(body: FolderCreate, user: TelegramUser = Depends(current_user)
 @app.get("/api/folders/{folder_id}")
 def get_folder(folder_id: int, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
                q: str = Query("", max_length=100), filter: Literal["all", "due", "errors"] = "all",
+               topic_id: int | None = Query(default=None),
                user: TelegramUser = Depends(current_user)):
     folder = require_folder(user.id, folder_id)
-    cards = db.cards(folder_id, offset, limit + 1, q.strip(), filter, user.id)
+    cards = db.cards(folder_id, offset, 10000, q.strip(), filter, user.id)
+    if topic_id is not None:cards=[card for card in cards if card["topic_id"]==topic_id]
     result = folder_json(user.id, folder)
     members = []
     if folder["role"] == "owner":
@@ -430,8 +541,46 @@ def get_folder(folder_id: int, offset: int = Query(0, ge=0), limit: int = Query(
             member.pop("custom_avatar_key", None); member.pop("telegram_avatar_url", None)
             members.append(member)
     result.update({"cards": [card_json(card) for card in cards[:limit]], "offset": offset, "has_more": len(cards) > limit,
-                   "members": members})
+                   "members": members,"topics":[{**dict(row),"learned_count":int(row["learned_count"] or 0)} for row in db.topics(user.id,folder_id)]})
     return result
+
+
+@app.post("/api/folders/{folder_id}/topics",status_code=201)
+def create_topic(folder_id:int,body:TopicCreate,user:TelegramUser=Depends(current_user)):
+    require_editor(user.id,folder_id)
+    try:topic_id=db.create_topic(user.id,folder_id,body.name.strip())
+    except sqlite3.IntegrityError as exc:raise HTTPException(409,"topic_name_exists") from exc
+    return dict(db.topic(user.id,topic_id))
+
+
+@app.patch("/api/topics/{topic_id}")
+def update_topic(topic_id:int,body:TopicUpdate,user:TelegramUser=Depends(current_user)):
+    topic=db.topic(user.id,topic_id)
+    if not topic:raise HTTPException(404,"Topic not found")
+    require_editor(user.id,topic["folder_id"])
+    try:db.rename_topic(topic_id,body.name.strip())
+    except sqlite3.IntegrityError as exc:raise HTTPException(409,"topic_name_exists") from exc
+    return dict(db.topic(user.id,topic_id))
+
+
+@app.post("/api/topics/{topic_id}/delete")
+def delete_topic(topic_id:int,body:TopicDelete,user:TelegramUser=Depends(current_user)):
+    topic=db.topic(user.id,topic_id)
+    if not topic:raise HTTPException(404,"Topic not found")
+    require_editor(user.id,topic["folder_id"])
+    try:db.delete_topic(topic_id,body.target_topic_id)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    return {"ok":True}
+
+
+@app.patch("/api/cards/{card_id}/topic")
+def move_card(card_id:int,body:CardMove,user:TelegramUser=Depends(current_user)):
+    card=db.card(user.id,card_id)
+    if not card:raise HTTPException(404,"Card not found")
+    require_editor(user.id,card["folder_id"])
+    try:db.move_card(card_id,body.topic_id)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    return {"ok":True,"topic_id":body.topic_id}
 
 
 @app.patch("/api/folders/{folder_id}")
@@ -456,17 +605,19 @@ def delete_folder(folder_id: int, user: TelegramUser = Depends(current_user)):
 @app.post("/api/folders/{folder_id}/cards", status_code=201)
 def create_cards(folder_id: int, body: CardsCreate, user: TelegramUser = Depends(current_user)):
     require_editor(user.id, folder_id)
+    topic_id=body.topic_id
+    if topic_id is not None:
+        topic=db.topic(user.id,topic_id)
+        if not topic or topic["folder_id"]!=folder_id:raise HTTPException(422,"invalid_topic")
     cached = db.request_result(user.id, f"cards_create:{folder_id}", body.request_id)
     if cached: return json.loads(cached)
     items = [(x.term.strip(), x.translation.strip(), clean_optional(x.transcription)) for x in body.items]
     duplicates = [item for item in items if db.duplicate(folder_id, item[0], item[1])]
     accepted = [item for item in items if not (body.skip_duplicates and db.duplicate(folder_id, item[0], item[1]))]
-    if db.card_count(folder_id) + len(accepted) > MAX_CARDS_PER_FOLDER:
-        raise HTTPException(409, "folder_word_limit")
     if accepted:
-        try: inserted_ids = db.add_cards(user.id, folder_id, accepted)
+        try: inserted_ids = db.add_cards(user.id, folder_id, accepted,topic_id)
         except ValueError as exc:
-            if str(exc) == "folder_word_limit": raise HTTPException(409, "folder_word_limit") from exc
+            if str(exc) in {"topic_word_limit","invalid_topic"}: raise HTTPException(409, str(exc)) from exc
             raise
         method = "single" if len(accepted) == 1 else "bulk"
         track(user.id, "word_added", {"folder_id": folder_id, "words_count": len(accepted), "input_method": method},
@@ -582,17 +733,18 @@ def create_invite(folder_id: int, body: InviteCreate, user: TelegramUser = Depen
     username = os.getenv("BOT_USERNAME", "").lstrip("@")
     if not username:
         raise HTTPException(503, "BOT_USERNAME is not configured")
-    token = db.create_invite(user.id, folder_id, body.role)
+    stored_role="member" if body.role=="viewer" else body.role
+    token = db.create_invite(user.id, folder_id, stored_role)
     track(user.id, "share_link_created", {"folder_id": folder_id},
           idempotency_key=f"share-created:{token}")
-    return {"token": token, "url": f"https://t.me/{username}?startapp={token}", "role": body.role}
+    return {"token": token, "url": f"https://t.me/{username}?start={token}", "role": "viewer" if stored_role=="member" else stored_role}
 
 
 @app.get("/api/folders/{folder_id}/invites")
 def list_invites(folder_id: int, user: TelegramUser = Depends(current_user)):
     require_owner(user.id, folder_id)
     username = os.getenv("BOT_USERNAME", "").lstrip("@")
-    return {"items": [{**dict(row), "url": f"https://t.me/{username}?startapp={row['token']}"} for row in db.invites(folder_id)]}
+    return {"items": [{**dict(row), "url": f"https://t.me/{username}?start={row['token']}"} for row in db.invites(folder_id)]}
 
 
 @app.delete("/api/folders/{folder_id}/invites/{token}")
@@ -604,7 +756,7 @@ def revoke_invite(folder_id: int, token: str, user: TelegramUser = Depends(curre
 
 @app.post("/api/invites/{token}/join")
 def join_invite(token: str, user: TelegramUser = Depends(current_user)):
-    if not token.startswith("inv_") or len(token) > 80:
+    if not token.startswith(("inv_","folder_")) or len(token) > 80:
         raise HTTPException(404, "Invitation not found")
     folder_id = db.join(user.id, token)
     if not folder_id:
@@ -614,10 +766,25 @@ def join_invite(token: str, user: TelegramUser = Depends(current_user)):
     return {"ok": True, "folder_id": folder_id}
 
 
+@app.get("/api/invites/{token}")
+def invite_preview(token:str,user:TelegramUser=Depends(current_user)):
+    if not token.startswith(("inv_","folder_")) or len(token)>80:raise HTTPException(404,"Invitation not found")
+    row=db.invite_preview(user.id,token)
+    if not row or row["revoked"]:raise HTTPException(404,"Invitation not found")
+    return dict(row)
+
+
+@app.post("/api/invites/{token}/decline")
+def decline_invite(token:str,user:TelegramUser=Depends(current_user)):
+    if not db.decline_invite(user.id,token):raise HTTPException(404,"Invitation not found")
+    return {"ok":True}
+
+
 @app.patch("/api/folders/{folder_id}/members/{member_id}")
 def update_member(folder_id: int, member_id: int, body: MemberUpdate, user: TelegramUser = Depends(current_user)):
     require_owner(user.id, folder_id)
-    if member_id == user.id or not db.set_member_role(folder_id, member_id, body.role):
+    role="member" if body.role=="viewer" else body.role
+    if member_id == user.id or not db.set_member_role(folder_id, member_id, role):
         raise HTTPException(409, "The owner role cannot be changed")
     return {"ok": True}
 
@@ -628,6 +795,111 @@ def delete_member(folder_id: int, member_id: int, user: TelegramUser = Depends(c
     if member_id == user.id: raise HTTPException(409, "The owner cannot be removed")
     db.remove_member(folder_id, member_id)
     return {"ok": True}
+
+
+def require_teacher(user_id:int):
+    row=db.user_profile(user_id)
+    if not row or row["usage_role"]!="teacher":raise HTTPException(403,"Teacher profile required")
+    return row
+
+
+def require_class_teacher(user_id:int,class_id:int):
+    with db.conn() as con:row=con.execute("SELECT * FROM classes WHERE id=? AND teacher_user_id=?",(class_id,user_id)).fetchone()
+    if not row:raise HTTPException(404,"Class not found")
+    return row
+
+
+@app.get("/api/classes")
+def list_classes(user:TelegramUser=Depends(current_user)):
+    with db.conn() as con:
+        owned=[dict(row) for row in con.execute("SELECT c.*,(SELECT COUNT(*) FROM class_members cm WHERE cm.class_id=c.id AND cm.status='active') student_count FROM classes c WHERE teacher_user_id=? ORDER BY active DESC,updated_at DESC",(user.id,))]
+        joined=[dict(row) for row in con.execute("SELECT c.* FROM classes c JOIN class_members cm ON cm.class_id=c.id WHERE cm.user_id=? AND cm.status='active' ORDER BY c.active DESC,c.updated_at DESC",(user.id,))]
+        assignments=[dict(row) for row in con.execute('''SELECT a.*,c.name class_name,f.name folder_name,t.name topic_name,ar.status
+FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id JOIN classes c ON c.id=a.class_id
+JOIN folders f ON f.id=a.folder_id LEFT JOIN topics t ON t.id=a.topic_id WHERE ar.user_id=? AND a.active=1 ORDER BY a.deadline IS NULL,a.deadline,a.id DESC''',(user.id,))]
+    return {"owned":owned,"joined":joined,"assignments":assignments,"teacher":db.user_profile(user.id)["usage_role"]=="teacher"}
+
+
+@app.post("/api/classes",status_code=201)
+def create_class(body:ClassCreate,user:TelegramUser=Depends(current_user)):
+    require_teacher(user.id);code="class_"+secrets.token_urlsafe(12)
+    with db.conn() as con:
+        cur=con.execute("INSERT INTO classes(teacher_user_id,name,language,level,description,invite_code) VALUES(?,?,?,?,?,?)",(user.id,body.name.strip(),body.language,body.level,body.description,code));class_id=cur.lastrowid
+    track(user.id,"class_created",{"class_id":class_id},idempotency_key=f"class-created:{class_id}")
+    return {"id":class_id,"invite_code":code,"url":f"https://t.me/{os.getenv('BOT_USERNAME','LangSlovo_Bot').lstrip('@')}?start={code}"}
+
+
+@app.get("/api/classes/{class_id}")
+def class_detail(class_id:int,user:TelegramUser=Depends(current_user)):
+    classroom=require_class_teacher(user.id,class_id)
+    with db.conn() as con:
+        members=[dict(row) for row in con.execute("SELECT u.telegram_id,u.name,cm.status,cm.joined_at FROM class_members cm JOIN users u ON u.telegram_id=cm.user_id WHERE cm.class_id=? ORDER BY cm.status,u.name",(class_id,))]
+        assignments=[dict(row) for row in con.execute("SELECT a.*,f.name folder_name,t.name topic_name FROM assignments a JOIN folders f ON f.id=a.folder_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id=? ORDER BY a.id DESC",(class_id,))]
+        progress=[dict(row) for row in con.execute('''SELECT ar.assignment_id,ar.user_id,u.name,ar.status,ar.started_at,ar.completed_at,
+COUNT(DISTINCT p.card_id) learned_count,COUNT(DISTINCT cd.id) total_count,
+ROUND(100.0*SUM(CASE WHEN p.mastery_status='mastered' THEN 1 ELSE 0 END)/NULLIF(COUNT(DISTINCT cd.id),0)) mastery_percent
+FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id JOIN users u ON u.telegram_id=ar.user_id
+JOIN cards cd ON cd.folder_id=a.folder_id AND (a.topic_id IS NULL OR cd.topic_id=a.topic_id)
+LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=ar.user_id WHERE a.class_id=? GROUP BY ar.assignment_id,ar.user_id''',(class_id,))]
+    return {**dict(classroom),"members":members,"assignments":assignments,"progress":progress,
+            "url":f"https://t.me/{os.getenv('BOT_USERNAME','LangSlovo_Bot').lstrip('@')}?start={classroom['invite_code']}"}
+
+
+@app.patch("/api/classes/{class_id}")
+def update_class(class_id:int,body:ClassUpdate,user:TelegramUser=Depends(current_user)):
+    classroom=require_class_teacher(user.id,class_id)
+    values={"name":body.name.strip() if body.name else classroom["name"],"language":body.language or classroom["language"],
+            "level":body.level if body.level is not None else classroom["level"],"description":body.description if body.description is not None else classroom["description"]}
+    with db.conn() as con:con.execute("UPDATE classes SET name=?,language=?,level=?,description=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(values["name"],values["language"],values["level"],values["description"],class_id))
+    return {"ok":True,**values}
+
+
+@app.delete("/api/classes/{class_id}/members/{student_id}")
+def remove_class_student(class_id:int,student_id:int,user:TelegramUser=Depends(current_user)):
+    require_class_teacher(user.id,class_id)
+    with db.conn() as con:con.execute("UPDATE class_members SET status='removed',updated_at=CURRENT_TIMESTAMP WHERE class_id=? AND user_id=?",(class_id,student_id))
+    return {"ok":True}
+
+
+@app.post("/api/classes/join/{code}")
+def join_class(code:str,user:TelegramUser=Depends(current_user)):
+    if not code.startswith("class_"):raise HTTPException(404,"Class invitation not found")
+    with db.conn() as con:
+        classroom=con.execute("SELECT * FROM classes WHERE invite_code=? AND active=1",(code,)).fetchone()
+        if not classroom:raise HTTPException(404,"Class invitation not found")
+        if classroom["teacher_user_id"]==user.id:raise HTTPException(409,"Teacher is already in this class")
+        con.execute("INSERT INTO class_members(class_id,user_id,status) VALUES(?,?,'active') ON CONFLICT(class_id,user_id) DO UPDATE SET status='active',updated_at=CURRENT_TIMESTAMP",(classroom["id"],user.id))
+    track(user.id,"class_joined",{"class_id":classroom["id"]},idempotency_key=f"class-joined:{classroom['id']}:{user.id}")
+    return {"ok":True,"class_id":classroom["id"]}
+
+
+@app.post("/api/classes/{class_id}/regenerate-link")
+def regenerate_class_link(class_id:int,user:TelegramUser=Depends(current_user)):
+    require_class_teacher(user.id,class_id);code="class_"+secrets.token_urlsafe(12)
+    with db.conn() as con:con.execute("UPDATE classes SET invite_code=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(code,class_id))
+    return {"code":code,"url":f"https://t.me/{os.getenv('BOT_USERNAME','LangSlovo_Bot').lstrip('@')}?start={code}"}
+
+
+@app.post("/api/classes/{class_id}/deactivate")
+def deactivate_class(class_id:int,user:TelegramUser=Depends(current_user)):
+    require_class_teacher(user.id,class_id)
+    with db.conn() as con:con.execute("UPDATE classes SET active=0,updated_at=CURRENT_TIMESTAMP WHERE id=?",(class_id,))
+    return {"ok":True}
+
+
+@app.post("/api/classes/{class_id}/assignments",status_code=201)
+def create_assignment(class_id:int,body:AssignmentCreate,user:TelegramUser=Depends(current_user)):
+    require_class_teacher(user.id,class_id);require_folder(user.id,body.folder_id)
+    if body.topic_id is not None:
+        topic=db.topic(user.id,body.topic_id)
+        if not topic or topic["folder_id"]!=body.folder_id:raise HTTPException(422,"invalid_topic")
+    with db.conn() as con:
+        members=[row[0] for row in con.execute("SELECT user_id FROM class_members WHERE class_id=? AND status='active'",(class_id,))]
+        recipients=members if body.student_ids is None else [value for value in body.student_ids if value in set(members)]
+        cur=con.execute("INSERT INTO assignments(class_id,created_by,title,folder_id,topic_id,scope,deadline,description) VALUES(?,?,?,?,?,?,?,?)",(class_id,user.id,body.title.strip(),body.folder_id,body.topic_id,"all" if body.student_ids is None else "selected",body.deadline,body.description));assignment_id=cur.lastrowid
+        con.executemany("INSERT INTO assignment_recipients(assignment_id,user_id) VALUES(?,?)",[(assignment_id,value) for value in recipients])
+    track(user.id,"assignment_created",{"assignment_id":assignment_id,"class_id":class_id},idempotency_key=f"assignment-created:{assignment_id}")
+    return {"id":assignment_id,"recipients":len(recipients)}
 
 
 def safe_json(value: str, fallback):
@@ -676,11 +948,20 @@ def unfinished_study(folder_id: int, user: TelegramUser = Depends(current_user))
 @app.post("/api/study", status_code=201)
 def create_study(body: StudyCreate, user: TelegramUser = Depends(current_user)):
     require_folder(user.id, body.folder_id); db.set_timezone(user.id, body.timezone_offset)
-    mode = f"{body.mode}:{body.direction}"; card_ids = db.candidates(user.id, body.folder_id, mode)[:10]
+    if body.topic_id is not None:
+        topic=db.topic(user.id,body.topic_id)
+        if not topic or topic["folder_id"]!=body.folder_id:raise HTTPException(422,"invalid_topic")
+    if body.assignment_id is not None:
+        with db.conn() as con:
+            recipient=con.execute("SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id WHERE ar.assignment_id=? AND ar.user_id=? AND a.folder_id=? AND a.active=1",(body.assignment_id,user.id,body.folder_id)).fetchone()
+            if not recipient:raise HTTPException(403,"Assignment not available")
+            con.execute("UPDATE assignment_recipients SET status='started',started_at=COALESCE(started_at,CURRENT_TIMESTAMP) WHERE assignment_id=? AND user_id=?",(body.assignment_id,user.id))
+        track(user.id,"assignment_opened",{"assignment_id":body.assignment_id},idempotency_key=f"assignment-open:{body.assignment_id}:{user.id}")
+    mode = f"{body.mode}:{body.direction}"; card_ids = db.candidates(user.id, body.folder_id, mode,body.topic_id)[:10]
     if not card_ids:
         return {"done": True, "total": 0, "errors": 0, "first_correct": 0, "accuracy": 0, "folder_id": body.folder_id}
     session_id = secrets.token_urlsafe(12)
-    db.save_session(session_id, user.id, body.folder_id, mode, card_ids, body.study_format, body.timezone_offset)
+    db.save_session(session_id, user.id, body.folder_id, mode, card_ids, body.study_format, body.timezone_offset,body.topic_id,body.assignment_id)
     track(user.id, "test_started", {"test_session_id": session_id, "folder_id": body.folder_id, "words_count": len(card_ids)},
           session_id=session_id, idempotency_key=f"test-started:{session_id}")
     return session_json(user.id, session_id)
@@ -726,6 +1007,9 @@ def answer_study(session_id: str, body: StudyAnswer, user: TelegramUser = Depend
         track(user.id, "test_completed", {"test_session_id": session_id, "folder_id": result["folder_id"],
               "words_count": result["total"], "known_count": result["known"], "unknown_count": result["unknown"]},
               session_id=session_id, idempotency_key=f"test-completed:{session_id}")
+        if session["assignment_id"]:
+            with db.conn() as con:con.execute("UPDATE assignment_recipients SET status='completed',completed_at=CURRENT_TIMESTAMP WHERE assignment_id=? AND user_id=?",(session["assignment_id"],user.id))
+            track(user.id,"assignment_completed",{"assignment_id":session["assignment_id"]},idempotency_key=f"assignment-complete:{session['assignment_id']}:{user.id}")
     return result
 
 
@@ -751,9 +1035,11 @@ def finish_study(session_id: str, user: TelegramUser = Depends(current_user)):
     return {"ok": True, "folder_id": session["folder_id"]}
 
 
-def _game_cards(user_id: int, folder_id: int) -> list[dict]:
+def _game_cards(user_id: int, folder_id: int,topic_id:int|None=None) -> list[dict]:
     require_folder(user_id, folder_id)
-    return [card_json(row) for row in db.cards(folder_id, limit=MAX_CARDS_PER_FOLDER, user_id=user_id)]
+    rows=db.cards(folder_id, limit=10000, user_id=user_id)
+    if topic_id is not None:rows=[row for row in rows if row["topic_id"]==topic_id]
+    return [card_json(row) for row in rows]
 
 
 def _unambiguous(cards: list[dict]) -> list[dict]:
@@ -774,9 +1060,9 @@ def _unambiguous(cards: list[dict]) -> list[dict]:
     return result
 
 
-def _game_snapshot(user_id: int, folder_id: int, game_type: str, requested: list[int] | None = None) -> tuple[dict, dict]:
+def _game_snapshot(user_id: int, folder_id: int, game_type: str, requested: list[int] | None = None,topic_id:int|None=None) -> tuple[dict, dict]:
     folder = require_folder(user_id, folder_id)
-    cards = _game_cards(user_id, folder_id)
+    cards = _game_cards(user_id, folder_id,topic_id)
     if requested is not None:
         requested_set = set(requested)
         cards = [card for card in cards if card["id"] in requested_set]
@@ -866,8 +1152,8 @@ def unfinished_game(folder_id: int, game_type: Literal["match", "listen", "build
 
 
 @app.get("/api/games/options")
-def game_options(folder_id: int, user: TelegramUser = Depends(current_user)):
-    folder = require_folder(user.id, folder_id); cards = _game_cards(user.id, folder_id); clear = _unambiguous(cards)
+def game_options(folder_id: int,topic_id:int|None=None, user: TelegramUser = Depends(current_user)):
+    folder = require_folder(user.id, folder_id); cards = _game_cards(user.id, folder_id,topic_id); clear = _unambiguous(cards)
     build = [card for card in cards if re.fullmatch(r"[A-Za-z]{3,12}", card["term"])] if folder["source_lang"] == "en" else []
     return {"folder_id": folder_id, "folder_name": folder["name"], "games": {
         "match": {"size": min(6,len(clear)), "available": len(clear)>=2, "reason": None if len(clear)>=2 else "match_needs_two"},
@@ -878,8 +1164,8 @@ def game_options(folder_id: int, user: TelegramUser = Depends(current_user)):
 
 @app.post("/api/games", status_code=201)
 def create_game(body: GameCreate, user: TelegramUser = Depends(current_user)):
-    snapshot, state = _game_snapshot(user.id, body.folder_id, body.game_type, body.card_ids)
-    round_id = secrets.token_urlsafe(12); db.create_game_round(round_id, user.id, body.folder_id, body.game_type, snapshot, state)
+    snapshot, state = _game_snapshot(user.id, body.folder_id, body.game_type, body.card_ids,body.topic_id)
+    round_id = secrets.token_urlsafe(12); db.create_game_round(round_id, user.id, body.folder_id, body.game_type, snapshot, state,body.topic_id,body.assignment_id)
     track(user.id, "game_started", {"game_session_id": round_id, "game_type": body.game_type, "folder_id": body.folder_id},
           session_id=round_id, idempotency_key=f"game-started:{round_id}")
     return game_json(user.id, round_id)

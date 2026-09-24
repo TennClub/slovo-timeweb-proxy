@@ -1,5 +1,21 @@
 # Slovo
 
+## Product expansion v16
+
+- Folder content is organized as `Folder → Topic → Words`; a topic contains at most 30 words. Existing data is migrated losslessly into numbered “Без темы” topics.
+- Folder links use `https://t.me/<bot>?start=folder_<code>` and require an explicit accept/decline action. Access remains attached to the Telegram user and can be revoked by the owner.
+- Every user has a first-touch referral link. Self-referrals and reassignment are rejected.
+- Official Slovo sets are checked against `SLOVO_CHANNEL_ID` on every Mini App entry. Personal and shared folders are never locked.
+- New users complete a persistent five-step onboarding. Teachers receive class, invitation, assignment and student-progress tools.
+- Product events continue through the existing `analytics_events` pipeline. The private analytics bot exposes `/product` and includes the product funnel in its daily report.
+
+For channel gating, add the main bot as an administrator of the Telegram channel and set:
+
+```env
+SLOVO_CHANNEL_ID=@your_slovo_channel
+SLOVO_CHANNEL_URL=https://t.me/your_slovo_channel
+```
+
 Telegram-бот и Telegram Mini App для совместного изучения слов. Участники видят общие карточки, а прогресс повторения хранится отдельно для каждого.
 
 Возможности:

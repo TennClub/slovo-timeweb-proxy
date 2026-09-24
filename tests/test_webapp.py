@@ -81,9 +81,9 @@ def test_invite_link_opens_and_joins_mini_app(tmp_path, monkeypatch):
     created = client.post(f"/api/folders/{folder_id}/invites", json={"role":"member"})
     assert created.status_code == 200
     invite_url = created.json()["url"]
-    assert invite_url.startswith("https://t.me/LangSlovo_Bot?startapp=inv_")
+    assert invite_url.startswith("https://t.me/LangSlovo_Bot?start=folder_")
 
-    token = invite_url.split("startapp=", 1)[1]
+    token = invite_url.split("start=", 1)[1]
     use_user(202, "Student")
     joined = client.post(f"/api/invites/{token}/join")
     assert joined.status_code == 200
