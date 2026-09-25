@@ -26,9 +26,13 @@ def action(client, round_id, event_id, **payload):
     return client.post(f"/api/games/{round_id}/action", json={"event_id": event_id, **payload})
 
 
+def topic_id(database, folder):
+    return database.topics(1, folder)[0]["id"]
+
+
 def test_game_options_report_actual_short_rounds(tmp_path, monkeypatch):
-    _, folder, client = setup_game(tmp_path, monkeypatch, count=3)
-    games = client.get(f"/api/games/options?folder_id={folder}").json()["games"]
+    database, folder, client = setup_game(tmp_path, monkeypatch, count=3)
+    games = client.get(f"/api/games/options?folder_id={folder}&topic_id={topic_id(database, folder)}").json()["games"]
     assert games["match"] == {"size": 3, "available": True, "reason": None}
     assert games["listen"]["available"] is False
     assert games["listen"]["reason"] == "listen_needs_four"
@@ -37,7 +41,7 @@ def test_game_options_report_actual_short_rounds(tmp_path, monkeypatch):
 
 def test_match_round_is_finite_and_duplicate_action_is_idempotent(tmp_path, monkeypatch):
     database, folder, client = setup_game(tmp_path, monkeypatch)
-    game = client.post("/api/games", json={"folder_id": folder, "game_type": "match"}).json()
+    game = client.post("/api/games", json={"folder_id": folder, "topic_id": topic_id(database, folder), "game_type": "match"}).json()
     assert game["total"] == 6
     wrong_left = game["terms"][0]["card_id"]
     wrong_right = next(x["card_id"] for x in game["translations"] if x["card_id"] != wrong_left)
@@ -61,7 +65,7 @@ def test_match_round_is_finite_and_duplicate_action_is_idempotent(tmp_path, monk
 
 def test_listen_categories_sum_and_technical_skip_is_not_an_error(tmp_path, monkeypatch):
     database, folder, client = setup_game(tmp_path, monkeypatch, count=4)
-    game = client.post("/api/games", json={"folder_id": folder, "game_type": "listen"}).json()
+    game = client.post("/api/games", json={"folder_id": folder, "topic_id": topic_id(database, folder), "game_type": "listen"}).json()
     q = game["question"]
     assert q["speech_text"]
     assert "term" not in q
@@ -82,10 +86,10 @@ def test_listen_categories_sum_and_technical_skip_is_not_an_error(tmp_path, monk
 
 
 def test_build_hint_wrong_answer_and_repeated_letters(tmp_path, monkeypatch):
-    _, folder, client = setup_game(tmp_path, monkeypatch, count=4)
+    database, folder, client = setup_game(tmp_path, monkeypatch, count=4)
     cards = client.get(f"/api/folders/{folder}?limit=50").json()["cards"]
     letter_id = next(card["id"] for card in cards if card["term"] == "letter")
-    game = client.post("/api/games", json={"folder_id": folder, "game_type": "build", "card_ids": [letter_id]}).json()
+    game = client.post("/api/games", json={"folder_id": folder, "topic_id": topic_id(database, folder), "game_type": "build", "card_ids": [letter_id]}).json()
     q = game["question"]
     wrong = action(client, game["id"], "build-wrong", action="check", card_id=q["card_id"], assembled="lettre").json()
     assert not wrong["done"] and wrong["outcome"] == "wrong"
@@ -97,9 +101,10 @@ def test_build_hint_wrong_answer_and_repeated_letters(tmp_path, monkeypatch):
 
 def test_pause_resume_and_access_revocation(tmp_path, monkeypatch):
     database, folder, client = setup_game(tmp_path, monkeypatch, count=4)
-    game = client.post("/api/games", json={"folder_id": folder, "game_type": "listen"}).json()
+    topic = topic_id(database, folder)
+    game = client.post("/api/games", json={"folder_id": folder, "topic_id": topic, "game_type": "listen"}).json()
     assert client.post(f"/api/games/{game['id']}/pause").json()["ok"]
-    assert client.get(f"/api/games/unfinished?folder_id={folder}").json()["status"] == "paused"
+    assert client.get(f"/api/games/unfinished?folder_id={folder}&topic_id={topic}").json()["status"] == "paused"
     assert client.get(f"/api/games/{game['id']}").json()["status"] == "in_progress"
     with database.conn() as con:
         con.execute("DELETE FROM memberships WHERE folder_id=? AND user_id=?", (folder, 1))

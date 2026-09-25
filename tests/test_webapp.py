@@ -50,7 +50,8 @@ def test_folder_cards_and_study_flow(tmp_path, monkeypatch):
     ]})
     assert cards.json() == {"added":2, "duplicates":0}
 
-    session = client.post("/api/study", json={"folder_id":folder_id, "mode":"due", "direction":"rev"}).json()
+    topic = database.topics(101, folder_id)[0]["id"]
+    session = client.post("/api/study", json={"folder_id":folder_id, "topic_id":topic, "mode":"due", "direction":"rev"}).json()
     assert session["front"] in {"привет", "книга"}
     assert session["back"] in {"hola", "libro"}
     while not session["done"]:

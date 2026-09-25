@@ -24,6 +24,9 @@ EVENTS = {
     "assignment_opened", "assignment_completed",
     "onboarding_started","onboarding_step_completed","onboarding_completed",
     "channel_subscription_changed","class_created","class_joined","assignment_created",
+    "user_role_selected","assignment_assigned","assignment_started",
+    "channel_access_blocked","channel_subscribe_clicked","channel_subscription_verified",
+    "official_folders_unlocked","official_folder_opened","channel_subscription_lost",
 }
 MEANINGFUL_EVENTS = {
     "folder_created", "word_added", "test_started", "test_completed",
@@ -53,6 +56,15 @@ EVENT_FIELDS = {
     "class_created": {"class_id"},
     "class_joined": {"class_id"},
     "assignment_created": {"assignment_id","class_id"},
+    "user_role_selected": {"role"},
+    "assignment_assigned": {"assignment_id","class_id","recipients"},
+    "assignment_started": {"assignment_id"},
+    "channel_access_blocked": {"folder_id"},
+    "channel_subscribe_clicked": set(),
+    "channel_subscription_verified": set(),
+    "official_folders_unlocked": set(),
+    "official_folder_opened": {"folder_id"},
+    "channel_subscription_lost": set(),
 }
 
 

@@ -16,6 +16,10 @@ def setup_app(tmp_path: Path, monkeypatch, user_id=1):
     return database, TestClient(webapp.app)
 
 
+def system_topic(database, folder, user_id=1):
+    return database.topics(user_id, folder)[0]["id"]
+
+
 def test_migration_preserves_existing_cards(tmp_path):
     path = tmp_path / "legacy.db"
     con = sqlite3.connect(path)
@@ -139,7 +143,7 @@ def test_answer_normalization_variants_and_ambiguity(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Words", "en", "ru")
     database.add_cards(1, folder, [("fir-tree", "ёлка, ель; ёлочка")])
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "all", "direction": "fwd", "study_format": "typing"}).json()
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": system_topic(database, folder), "mode": "all", "direction": "fwd", "study_format": "typing"}).json()
     sid = session["id"]
     assert client.post(f"/api/study/{sid}/check", json={"answer": "  ЁЛКА!!!  "}).json()["verdict"] == "correct"
     assert client.post(f"/api/study/{sid}/check", json={"answer": "елачка"}).json()["verdict"] == "close"
@@ -150,7 +154,8 @@ def test_double_answer_unfinished_and_repeat_errors(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Words")
     database.add_cards(1, folder, [("one", "один"), ("two", "два")])
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "all", "study_format": "cards"}).json()
+    topic = system_topic(database, folder)
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": topic, "mode": "all", "study_format": "cards"}).json()
     sid = session["id"]
     first_card = session["card_id"]
     first = client.post(f"/api/study/{sid}/answer", json={"success": False, "card_id": first_card})
@@ -158,7 +163,7 @@ def test_double_answer_unfinished_and_repeat_errors(tmp_path, monkeypatch):
     assert client.post(f"/api/study/{sid}/answer", json={"success": False, "card_id": first_card}).status_code == 409
     with database.conn() as con:
         assert con.execute("SELECT COUNT(*) FROM study_events WHERE session_id=?", (sid,)).fetchone()[0] == 1
-    unfinished = client.get(f"/api/study/unfinished?folder_id={folder}").json()
+    unfinished = client.get(f"/api/study/unfinished?folder_id={folder}&topic_id={topic}").json()
     assert unfinished["id"] == sid
     while not first.json()["done"]:
         first = client.post(f"/api/study/{sid}/answer", json={"success": True})
@@ -171,7 +176,7 @@ def test_simple_round_is_fixed_unique_and_retries_only_unknown(tmp_path, monkeyp
     folder = database.create_folder(1, "Round")
     database.add_cards(1, folder, [(f"word-{i}", f"слово-{i}") for i in range(15)])
 
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "due", "study_format": "cards"}).json()
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": system_topic(database, folder), "mode": "due", "study_format": "cards"}).json()
     assert session["total"] == 10
     sid = session["id"]
     seen = []
@@ -204,11 +209,12 @@ def test_study_can_pause_or_finish_without_reappearing(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Stop")
     database.add_cards(1, folder, [("one", "один"), ("two", "два")])
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "due"}).json()
+    topic = system_topic(database, folder)
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": topic, "mode": "due"}).json()
     sid = session["id"]
-    assert client.get(f"/api/study/unfinished?folder_id={folder}").json()["id"] == sid
+    assert client.get(f"/api/study/unfinished?folder_id={folder}&topic_id={topic}").json()["id"] == sid
     assert client.post(f"/api/study/{sid}/finish").json()["ok"] is True
-    assert client.get(f"/api/study/unfinished?folder_id={folder}").json() == {"id": None}
+    assert client.get(f"/api/study/unfinished?folder_id={folder}&topic_id={topic}").json() == {"id": None}
 
 
 def test_weekly_stats_definitions_and_user_independence(tmp_path, monkeypatch):
@@ -248,7 +254,7 @@ def test_study_payload_does_not_expose_usage_examples(tmp_path, monkeypatch):
     database.add_cards(1, folder, [("journey", "путешествие")])
     card = database.cards(folder)[0]
     assert card["example"] is None and card["example_translation"] is None
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "all"}).json()
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": system_topic(database, folder), "mode": "all"}).json()
     assert "example" not in session and "example_translation" not in session
     assert session["detail_term"] == "journey"
 
@@ -276,7 +282,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=18" in html and "app.js?v=18" in html
+    assert "styles.css?v=19" in html and "app.js?v=19" in html
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css

@@ -540,9 +540,10 @@ ON CONFLICT(user_id,set_slug) DO UPDATE SET active=1,updated_at=CURRENT_TIMESTAM
             if not source:return None
             folder_id=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(f"{source['title']} — копия",u,'en','ru')).lastrowid
             c.execute("INSERT INTO memberships(folder_id,user_id,role) VALUES(?,?,?)",(folder_id,u,'owner'))
-            c.execute('''INSERT INTO cards(folder_id,term,translation,transcription,example,example_translation,audio_url,created_by)
-SELECT ?,c.term,c.translation,c.transcription,c.example,c.example_translation,c.audio_url,?
-FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER BY cc.position''',(folder_id,u,slug))
+            topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,'Без темы',1,0,?)",(folder_id,u)).lastrowid
+            c.execute('''INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,audio_url,created_by)
+SELECT ?,?,c.term,c.translation,c.transcription,c.example,c.example_translation,c.audio_url,?
+FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER BY cc.position''',(folder_id,topic_id,u,slug))
             return folder_id
     def set_folder_languages(self,f,source,target):
         with self.conn() as c:c.execute("UPDATE folders SET source_lang=?,target_lang=? WHERE id=?",(source,target,f))
@@ -566,11 +567,13 @@ FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER 
     def game_round(self,u,round_id):
         with self.conn() as c:return c.execute("SELECT * FROM game_rounds WHERE id=? AND user_id=?",(round_id,u)).fetchone()
 
-    def unfinished_game(self,u,f,game_type=None):
+    def unfinished_game(self,u,f,game_type=None,topic_id=None):
         query="SELECT * FROM game_rounds WHERE user_id=? AND folder_id=? AND status IN ('in_progress','paused')"
         params=[u,f]
         if game_type:
             query+=" AND game_type=?";params.append(game_type)
+        if topic_id is not None:
+            query+=" AND topic_id=?";params.append(topic_id)
         query+=" ORDER BY updated_at DESC LIMIT 1"
         with self.conn() as c:return c.execute(query,params).fetchone()
     def weekly_stats(self,u,timezone_offset=0):
@@ -751,8 +754,11 @@ FROM invitations i JOIN folders f ON f.id=i.folder_id JOIN users owner ON owner.
     def stop_session(self,sid):
         with self.conn() as c:
             c.execute("UPDATE sessions SET current_card=NULL,answered=0,completed_at=COALESCE(completed_at,?) WHERE id=?",(datetime.now(timezone.utc).isoformat(),sid))
-    def unfinished_session(self,u,f):
-        with self.conn() as c:return c.execute("SELECT id FROM sessions WHERE user_id=? AND folder_id=? AND current_card IS NOT NULL AND completed_at IS NULL ORDER BY created_at DESC LIMIT 1",(u,f)).fetchone()
+    def unfinished_session(self,u,f,topic_id=None):
+        query="SELECT id FROM sessions WHERE user_id=? AND folder_id=? AND current_card IS NOT NULL AND completed_at IS NULL";params=[u,f]
+        if topic_id is not None:query+=" AND topic_id=?";params.append(topic_id)
+        query+=" ORDER BY created_at DESC LIMIT 1"
+        with self.conn() as c:return c.execute(query,params).fetchone()
 
 
 db=DB(os.getenv('DATABASE_PATH','data/slovo.db'))

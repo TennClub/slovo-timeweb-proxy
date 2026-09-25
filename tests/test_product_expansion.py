@@ -138,5 +138,50 @@ def test_15_assignment_reuses_content_and_tracks_completion(tmp_path, monkeypatc
     assert session["done"] and status == "completed" and database.card_count(folder) == 1
 
 
+def test_16_regular_study_and_games_require_a_topic(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Scoped")
+    database.add_cards(101, folder, [("one", "один"), ("two", "два")])
+    assert client.post("/api/study", json={"folder_id": folder, "mode": "all"}).status_code == 422
+    assert client.get(f"/api/study/unfinished?folder_id={folder}").status_code == 422
+    assert client.get(f"/api/games/options?folder_id={folder}").status_code == 422
+    assert client.post("/api/games", json={"folder_id": folder, "game_type": "match"}).status_code == 422
+
+
+def test_17_topic_delete_moves_words_without_loss(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Move topic")
+    source = database.create_topic(101, folder, "Source"); target = database.topics(101, folder)[0]["id"]
+    database.add_cards(101, folder, [("one", "один")], source)
+    response = client.post(f"/api/topics/{source}/delete", json={"target_topic_id": target})
+    assert response.status_code == 200
+    assert database.card_count(folder) == 1 and database.cards(folder)[0]["topic_id"] == target
+
+
+def test_18_selected_assignment_and_teacher_metrics(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch); database.save_onboarding(101, 5, usage_role="teacher", complete=True)
+    folder = database.create_folder(101, "Selected"); topic = database.topics(101, folder)[0]["id"]
+    database.add_cards(101, folder, [("one", "один")], topic)
+    classroom = client.post("/api/classes", json={"name": "Group", "language": "en"}).json()
+    for user_id, name in ((202, "Student"), (303, "Friend")):
+        use(user_id, name); client.post(f"/api/classes/join/{classroom['invite_code']}")
+    use(101, "Teacher")
+    assignment = client.post(f"/api/classes/{classroom['id']}/assignments", json={"title": "One student", "folder_id": folder, "topic_id": topic, "student_ids": [202]}).json()
+    assert assignment["recipients"] == 1
+    detail = client.get(f"/api/classes/{classroom['id']}").json()
+    assert set(detail["progress"][0]) >= {"completion_percent", "known_words", "unknown_words", "accuracy", "learning_words", "repeat_words"}
+    with database.conn() as con:
+        assert con.execute("SELECT COUNT(*) FROM assignment_recipients WHERE assignment_id=?", (assignment["id"],)).fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM analytics_events WHERE event_name='assignment_assigned'").fetchone()[0] == 1
+
+
+def test_19_catalog_copy_assigns_every_word_to_a_topic(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch)
+    response = client.post("/api/catalog/airport/copy")
+    assert response.status_code == 201
+    folder = response.json()["id"]
+    cards = database.cards(folder)
+    assert cards and all(card["topic_id"] for card in cards)
+    assert database.topics(101, folder)[0]["name"] == "Без темы"
+
+
 def teardown_module():
     webapp.app.dependency_overrides.clear()

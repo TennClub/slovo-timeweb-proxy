@@ -86,7 +86,8 @@ def test_api_tracks_bulk_words_and_single_test_completion(tmp_path, monkeypatch)
     folder = client.post("/api/folders", json={"name": "Words", "source_lang": "en", "target_lang": "ru"}).json()["id"]
     items = [{"term": f"word-{i}", "translation": f"слово-{i}"} for i in range(3)]
     assert client.post(f"/api/folders/{folder}/cards", json={"items": items}).json()["added"] == 3
-    session = client.post("/api/study", json={"folder_id": folder, "mode": "all"}).json()
+    topic = database.topics(1, folder)[0]["id"]
+    session = client.post("/api/study", json={"folder_id": folder, "topic_id": topic, "mode": "all"}).json()
     while not session["done"]:
         session = client.post(f"/api/study/{session['id']}/answer", json={"success": True, "card_id": session["card_id"]}).json()
     # Retrying the final answer cannot create a second completion.

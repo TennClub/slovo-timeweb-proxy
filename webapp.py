@@ -239,6 +239,9 @@ FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id JOIN f
 LEFT JOIN catalog_sets cs ON cs.folder_id=f.id WHERE ar.user_id=? AND a.folder_id=? AND a.active=1 LIMIT 1''',(user_id,folder_id)).fetchone()
     if not folder:
         raise HTTPException(404, "Folder not found")
+    if "set_slug" in folder.keys() and folder["set_slug"] and not check_channel(user_id)["subscribed"]:
+        track(user_id,"channel_access_blocked",{"folder_id":folder_id},idempotency_key=f"channel-block:{user_id}:{folder_id}:{int(time.time()//3600)}")
+        raise HTTPException(403,"channel_subscription_required")
     return folder
 
 
@@ -300,6 +303,10 @@ def check_channel(user_id:int)->dict:
         old=bool(db.user_profile(user_id)["channel_subscribed"]);db.set_channel_state(user_id,subscribed)
         if old!=subscribed:
             track(user_id,"channel_subscription_changed",{"subscribed":subscribed},idempotency_key=f"channel:{user_id}:{int(subscribed)}:{int(time.time()//3600)}")
+            if subscribed:
+                track(user_id,"channel_subscription_verified",idempotency_key=f"channel-verified:{user_id}:{int(time.time()//3600)}")
+                track(user_id,"official_folders_unlocked",idempotency_key=f"official-unlocked:{user_id}:{int(time.time()//3600)}")
+            else:track(user_id,"channel_subscription_lost",idempotency_key=f"channel-lost:{user_id}:{int(time.time()//3600)}")
         return {"configured":True,"subscribed":bool(subscribed),"url":url}
     except (HTTPError,URLError,TimeoutError,ValueError,OSError):
         row=db.user_profile(user_id);return {"configured":True,"subscribed":bool(row["channel_subscribed"]),"url":url,"check_error":True}
@@ -367,6 +374,7 @@ def update_onboarding(body:OnboardingUpdate,user:TelegramUser=Depends(current_us
     if not before["step"]:track(user.id,"onboarding_started",idempotency_key=f"onboarding-start:{user.id}")
     db.save_onboarding(user.id,body.step,body.usage_role,body.purposes,body.languages,body.levels,body.declared_source,body.complete)
     track(user.id,"onboarding_step_completed",{"step":body.step},idempotency_key=f"onboarding-step:{user.id}:{body.step}")
+    if body.step==1 and body.usage_role:track(user.id,"user_role_selected",{"role":body.usage_role},idempotency_key=f"role-selected:{user.id}:{body.usage_role}")
     if body.complete:track(user.id,"onboarding_completed",idempotency_key=f"onboarding-complete:{user.id}")
     return onboarding_json(user.id)
 
@@ -374,6 +382,11 @@ def update_onboarding(body:OnboardingUpdate,user:TelegramUser=Depends(current_us
 @app.post("/api/channel/check")
 def channel_check(user:TelegramUser=Depends(current_user)):
     return check_channel(user.id)
+
+@app.post("/api/channel/subscribe-click")
+def channel_subscribe_click(user:TelegramUser=Depends(current_user)):
+    track(user.id,"channel_subscribe_clicked",idempotency_key=f"channel-click:{user.id}:{int(time.time()//60)}")
+    return {"ok":True}
 
 
 @app.post("/api/analytics/open")
@@ -477,13 +490,18 @@ def catalog_detail(slug: str, user: TelegramUser = Depends(current_user)):
         raise HTTPException(404, "Slovo set not found")
     result = catalog_set_json(row)
     result["locked"]=not check_channel(user.id)["subscribed"]
+    if result["locked"]:track(user.id,"channel_access_blocked",{"folder_id":result["folder_id"]},idempotency_key=f"channel-block:{user.id}:{result['folder_id']}:{int(time.time()//3600)}")
+    else:track(user.id,"official_folder_opened",{"folder_id":result["folder_id"]},idempotency_key=f"official-open:{user.id}:{result['folder_id']}:{int(time.time()//60)}")
     result["cards"] = [card_json(card) for card in db.catalog_cards(slug)]
     return result
 
 
 @app.post("/api/catalog/{slug}/attach")
 def attach_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
-    if not check_channel(user.id)["subscribed"]:raise HTTPException(403,"channel_subscription_required")
+    if not check_channel(user.id)["subscribed"]:
+        row=db.catalog_set(user.id,slug)
+        if row:track(user.id,"channel_access_blocked",{"folder_id":row["folder_id"]},idempotency_key=f"channel-block:{user.id}:{row['folder_id']}:{int(time.time()//3600)}")
+        raise HTTPException(403,"channel_subscription_required")
     folder_id = db.subscribe_set(user.id, slug)
     if not folder_id:
         raise HTTPException(404, "Slovo set not found")
@@ -836,11 +854,18 @@ def class_detail(class_id:int,user:TelegramUser=Depends(current_user)):
         members=[dict(row) for row in con.execute("SELECT u.telegram_id,u.name,cm.status,cm.joined_at FROM class_members cm JOIN users u ON u.telegram_id=cm.user_id WHERE cm.class_id=? AND cm.status='active' ORDER BY u.name",(class_id,))]
         assignments=[dict(row) for row in con.execute("SELECT a.*,f.name folder_name,t.name topic_name FROM assignments a JOIN folders f ON f.id=a.folder_id LEFT JOIN topics t ON t.id=a.topic_id WHERE a.class_id=? ORDER BY a.id DESC",(class_id,))]
         progress=[dict(row) for row in con.execute('''SELECT ar.assignment_id,ar.user_id,u.name,ar.status,ar.started_at,ar.completed_at,
-COUNT(DISTINCT p.card_id) learned_count,COUNT(DISTINCT cd.id) total_count,
-ROUND(100.0*SUM(CASE WHEN p.mastery_status='mastered' THEN 1 ELSE 0 END)/NULLIF(COUNT(DISTINCT cd.id),0)) mastery_percent
+COUNT(DISTINCT cd.id) total_count,
+COUNT(DISTINCT CASE WHEN p.mastery_status='mastered' THEN cd.id END) known_words,
+COUNT(DISTINCT CASE WHEN COALESCE(p.mastery_status,'new')!='mastered' THEN cd.id END) unknown_words,
+COUNT(DISTINCT CASE WHEN p.mastery_status='mastered' THEN cd.id END) learned_words,
+COUNT(DISTINCT CASE WHEN COALESCE(p.mastery_status,'new')!='mastered' AND COALESCE(p.error_count,0)>0 THEN cd.id END) repeat_words,
+COUNT(DISTINCT CASE WHEN COALESCE(p.mastery_status,'new')!='mastered' AND COALESCE(p.error_count,0)=0 THEN cd.id END) learning_words,
+ROUND(100.0*SUM(CASE WHEN e.correct=1 THEN 1 ELSE 0 END)/NULLIF(COUNT(e.id),0)) accuracy,
+ROUND(100.0*COUNT(DISTINCT CASE WHEN p.mastery_status='mastered' THEN cd.id END)/NULLIF(COUNT(DISTINCT cd.id),0)) completion_percent
 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id JOIN users u ON u.telegram_id=ar.user_id
 JOIN cards cd ON cd.folder_id=a.folder_id AND (a.topic_id IS NULL OR cd.topic_id=a.topic_id)
-LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=ar.user_id WHERE a.class_id=? GROUP BY ar.assignment_id,ar.user_id''',(class_id,))]
+LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=ar.user_id
+LEFT JOIN study_events e ON e.card_id=cd.id AND e.user_id=ar.user_id WHERE a.class_id=? GROUP BY ar.assignment_id,ar.user_id''',(class_id,))]
     return {**dict(classroom),"members":members,"assignments":assignments,"progress":progress,
             "url":f"https://t.me/{os.getenv('BOT_USERNAME','LangSlovo_Bot').lstrip('@')}?start={classroom['invite_code']}"}
 
@@ -896,9 +921,11 @@ def create_assignment(class_id:int,body:AssignmentCreate,user:TelegramUser=Depen
     with db.conn() as con:
         members=[row[0] for row in con.execute("SELECT user_id FROM class_members WHERE class_id=? AND status='active'",(class_id,))]
         recipients=members if body.student_ids is None else [value for value in body.student_ids if value in set(members)]
+        if not recipients:raise HTTPException(422,"No valid recipients")
         cur=con.execute("INSERT INTO assignments(class_id,created_by,title,folder_id,topic_id,scope,deadline,description) VALUES(?,?,?,?,?,?,?,?)",(class_id,user.id,body.title.strip(),body.folder_id,body.topic_id,"all" if body.student_ids is None else "selected",body.deadline,body.description));assignment_id=cur.lastrowid
         con.executemany("INSERT INTO assignment_recipients(assignment_id,user_id) VALUES(?,?)",[(assignment_id,value) for value in recipients])
     track(user.id,"assignment_created",{"assignment_id":assignment_id,"class_id":class_id},idempotency_key=f"assignment-created:{assignment_id}")
+    track(user.id,"assignment_assigned",{"assignment_id":assignment_id,"class_id":class_id,"recipients":len(recipients)},idempotency_key=f"assignment-assigned:{assignment_id}")
     return {"id":assignment_id,"recipients":len(recipients)}
 
 
@@ -940,23 +967,30 @@ def session_json(user_id: int, session_id: str) -> dict:
 
 
 @app.get("/api/study/unfinished")
-def unfinished_study(folder_id: int, user: TelegramUser = Depends(current_user)):
-    require_folder(user.id, folder_id); row = db.unfinished_session(user.id, folder_id)
+def unfinished_study(folder_id: int,topic_id:int|None=None, user: TelegramUser = Depends(current_user)):
+    require_folder(user.id, folder_id)
+    if topic_id is None:raise HTTPException(422,"topic_required")
+    topic=db.topic(user.id,topic_id)
+    if not topic or topic["folder_id"]!=folder_id:raise HTTPException(422,"invalid_topic")
+    row = db.unfinished_session(user.id, folder_id,topic_id)
     return session_json(user.id, row["id"]) if row else {"id": None}
 
 
 @app.post("/api/study", status_code=201)
 def create_study(body: StudyCreate, user: TelegramUser = Depends(current_user)):
     require_folder(user.id, body.folder_id); db.set_timezone(user.id, body.timezone_offset)
+    if body.topic_id is None and body.assignment_id is None:raise HTTPException(422,"topic_required")
     if body.topic_id is not None:
         topic=db.topic(user.id,body.topic_id)
         if not topic or topic["folder_id"]!=body.folder_id:raise HTTPException(422,"invalid_topic")
     if body.assignment_id is not None:
         with db.conn() as con:
-            recipient=con.execute("SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id WHERE ar.assignment_id=? AND ar.user_id=? AND a.folder_id=? AND a.active=1",(body.assignment_id,user.id,body.folder_id)).fetchone()
+            recipient=con.execute("SELECT a.topic_id FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assignment_id WHERE ar.assignment_id=? AND ar.user_id=? AND a.folder_id=? AND a.active=1",(body.assignment_id,user.id,body.folder_id)).fetchone()
             if not recipient:raise HTTPException(403,"Assignment not available")
+            if recipient["topic_id"] is not None and body.topic_id!=recipient["topic_id"]:raise HTTPException(403,"Assignment topic mismatch")
             con.execute("UPDATE assignment_recipients SET status='started',started_at=COALESCE(started_at,CURRENT_TIMESTAMP) WHERE assignment_id=? AND user_id=?",(body.assignment_id,user.id))
         track(user.id,"assignment_opened",{"assignment_id":body.assignment_id},idempotency_key=f"assignment-open:{body.assignment_id}:{user.id}")
+        track(user.id,"assignment_started",{"assignment_id":body.assignment_id},idempotency_key=f"assignment-started:{body.assignment_id}:{user.id}")
     mode = f"{body.mode}:{body.direction}"; card_ids = db.candidates(user.id, body.folder_id, mode,body.topic_id)[:10]
     if not card_ids:
         return {"done": True, "total": 0, "errors": 0, "first_correct": 0, "accuracy": 0, "folder_id": body.folder_id}
@@ -1146,14 +1180,20 @@ def game_json(user_id: int, round_id: str, resume: bool = False) -> dict:
 
 
 @app.get("/api/games/unfinished")
-def unfinished_game(folder_id: int, game_type: Literal["match", "listen", "build"] | None = None, user: TelegramUser = Depends(current_user)):
-    require_folder(user.id, folder_id); row = db.unfinished_game(user.id, folder_id, game_type)
+def unfinished_game(folder_id: int,topic_id:int|None=None, game_type: Literal["match", "listen", "build"] | None = None, user: TelegramUser = Depends(current_user)):
+    require_folder(user.id, folder_id)
+    if topic_id is None:raise HTTPException(422,"topic_required")
+    row = db.unfinished_game(user.id, folder_id, game_type,topic_id)
     return game_json(user.id, row["id"]) if row else {"id": None}
 
 
 @app.get("/api/games/options")
 def game_options(folder_id: int,topic_id:int|None=None, user: TelegramUser = Depends(current_user)):
-    folder = require_folder(user.id, folder_id); cards = _game_cards(user.id, folder_id,topic_id); clear = _unambiguous(cards)
+    folder = require_folder(user.id, folder_id)
+    if topic_id is None:raise HTTPException(422,"topic_required")
+    topic=db.topic(user.id,topic_id)
+    if not topic or topic["folder_id"]!=folder_id:raise HTTPException(422,"invalid_topic")
+    cards = _game_cards(user.id, folder_id,topic_id); clear = _unambiguous(cards)
     build = [card for card in cards if re.fullmatch(r"[A-Za-z]{3,12}", card["term"])] if folder["source_lang"] == "en" else []
     return {"folder_id": folder_id, "folder_name": folder["name"], "games": {
         "match": {"size": min(6,len(clear)), "available": len(clear)>=2, "reason": None if len(clear)>=2 else "match_needs_two"},
@@ -1164,6 +1204,10 @@ def game_options(folder_id: int,topic_id:int|None=None, user: TelegramUser = Dep
 
 @app.post("/api/games", status_code=201)
 def create_game(body: GameCreate, user: TelegramUser = Depends(current_user)):
+    if body.topic_id is None and body.assignment_id is None:raise HTTPException(422,"topic_required")
+    if body.topic_id is not None:
+        topic=db.topic(user.id,body.topic_id)
+        if not topic or topic["folder_id"]!=body.folder_id:raise HTTPException(422,"invalid_topic")
     snapshot, state = _game_snapshot(user.id, body.folder_id, body.game_type, body.card_ids,body.topic_id)
     round_id = secrets.token_urlsafe(12); db.create_game_round(round_id, user.id, body.folder_id, body.game_type, snapshot, state,body.topic_id,body.assignment_id)
     track(user.id, "game_started", {"game_session_id": round_id, "game_type": body.game_type, "folder_id": body.folder_id},
