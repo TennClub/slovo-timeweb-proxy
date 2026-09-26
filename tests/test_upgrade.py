@@ -42,10 +42,12 @@ def test_migration_preserves_existing_cards(tmp_path):
     assert database.card(1, 1)["term"] == "apple"
     with database.conn() as migrated:
         columns = {row[1] for row in migrated.execute("PRAGMA table_info(cards)")}
-        assert {"transcription", "example", "example_translation", "audio_url"} <= columns
+        assert {"transcription", "example", "example_translation", "audio_url", "synonyms"} <= columns
         profile = migrated.execute("SELECT onboarding_completed_at,onboarding_step FROM users WHERE telegram_id=1").fetchone()
         assert profile["onboarding_completed_at"] is None and profile["onboarding_step"] == 0
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='003_learning_profile'").fetchone()
+        assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='004_language_enrichment'").fetchone()
+        assert migrated.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_card_translations'").fetchone()
         assert migrated.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
     database.save_onboarding(1, 5, usage_role="teacher", languages=["en"], levels=["b1"], complete=True)
@@ -282,7 +284,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=19" in html and "app.js?v=19" in html
+    assert "styles.css?v=20" in html and "app.js?v=20" in html
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css

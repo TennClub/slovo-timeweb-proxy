@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, quote
+from urllib.parse import parse_qsl, quote, urlencode
 from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
@@ -259,6 +259,12 @@ def require_owner(user_id: int, folder_id: int):
     return folder
 
 
+def preferred_language(user_id:int)->str:
+    try:languages=json.loads(db.user_profile(user_id)["learning_languages"] or "[]")
+    except (TypeError,ValueError):languages=[]
+    return next((code for code in languages if code in LANGUAGES),"en")
+
+
 def folder_json(user_id: int, folder, counts: dict | None = None) -> dict:
     word_count = int(counts["word_count"] if counts is not None else db.card_count(folder["id"]))
     due_count = int(counts["due_count"] if counts is not None else db.due_count(user_id, folder["id"]))
@@ -266,7 +272,7 @@ def folder_json(user_id: int, folder, counts: dict | None = None) -> dict:
     keys = set(folder.keys())
     return {
         "id": folder["id"], "name": folder["name"], "role": folder["role"],
-        "source_lang": folder["source_lang"], "target_lang": folder["target_lang"],
+        "source_lang": preferred_language(user_id) if ("set_slug" in keys and folder["set_slug"]) else folder["source_lang"], "target_lang": folder["target_lang"],
         "word_count": word_count, "due_count": due_count, "learned_count": learned,
         "progress_percent": round(learned * 100 / word_count) if word_count else 0,
         "is_slovo_set": bool(folder["set_slug"]) if "set_slug" in keys else False,
@@ -274,9 +280,18 @@ def folder_json(user_id: int, folder, counts: dict | None = None) -> dict:
     }
 
 
-def card_json(card) -> dict:
+def card_json(card,user_id:int|None=None,language:str|None=None) -> dict:
     keys=set(card.keys())
     result={key: card[key] for key in ("id", "term", "translation", "transcription", "audio_url")}
+    try:result["synonyms"]=json.loads(card["synonyms"] or "[]") if "synonyms" in keys else []
+    except (TypeError,ValueError):result["synonyms"]=[]
+    language=language or (preferred_language(user_id) if user_id is not None else None)
+    if language and language!='en':
+        localized=db.catalog_translation(card["id"],language)
+        if localized:
+            result["term"]=localized["term"];result["transcription"]=None;result["audio_url"]=None
+            try:result["synonyms"]=json.loads(localized["synonyms"] or "[]")
+            except (TypeError,ValueError):result["synonyms"]=[]
     result["topic_id"]=card["topic_id"] if "topic_id" in keys else None
     return result
 
@@ -323,7 +338,7 @@ def avatar_json(user_id: int, name: str = "") -> dict:
     }
 
 
-def catalog_set_json(row) -> dict:
+def catalog_set_json(row,user_id:int|None=None) -> dict:
     learned = int(row["learned_count"] or 0)
     return {
         "slug": row["slug"], "category_slug": row["category_slug"],
@@ -333,7 +348,7 @@ def catalog_set_json(row) -> dict:
         "added": bool(row["added"]), "learned_count": learned,
         "due_count": int(row["due_count"] or 0),
         "progress_percent": round(learned * 100 / int(row["word_count"])) if row["word_count"] else 0,
-        "source_lang": "en", "target_lang": "ru",
+        "source_lang": preferred_language(user_id) if user_id is not None else "en", "target_lang": "ru",
     }
 
 
@@ -369,13 +384,14 @@ def bootstrap(user: TelegramUser = Depends(current_user)):
 
 
 @app.patch("/api/onboarding")
-def update_onboarding(body:OnboardingUpdate,user:TelegramUser=Depends(current_user)):
+def update_onboarding(body:OnboardingUpdate,background_tasks:BackgroundTasks,user:TelegramUser=Depends(current_user)):
     before=onboarding_json(user.id)
     if not before["step"]:track(user.id,"onboarding_started",idempotency_key=f"onboarding-start:{user.id}")
     db.save_onboarding(user.id,body.step,body.usage_role,body.purposes,body.languages,body.levels,body.declared_source,body.complete)
     track(user.id,"onboarding_step_completed",{"step":body.step},idempotency_key=f"onboarding-step:{user.id}:{body.step}")
     if body.step==1 and body.usage_role:track(user.id,"user_role_selected",{"role":body.usage_role},idempotency_key=f"role-selected:{user.id}:{body.usage_role}")
     if body.complete:track(user.id,"onboarding_completed",idempotency_key=f"onboarding-complete:{user.id}")
+    if body.complete and preferred_language(user.id)!='en' and os.getenv('LANGUAGE_ENRICHMENT_ENABLED','1')=='1':background_tasks.add_task(prepare_official_sets,user.id)
     return onboarding_json(user.id)
 
 
@@ -400,7 +416,7 @@ def analytics_open(body: AppOpen, user: TelegramUser = Depends(current_user)):
 def home(user: TelegramUser = Depends(current_user)):
     folders = [folder_json(user.id, row, dict(row)) for row in db.folder_summaries(user.id)]
     due = sum(folder["due_count"] for folder in folders)
-    sets = [catalog_set_json(row) for row in db.catalog_sets(user.id)]
+    sets = [catalog_set_json(row,user.id) for row in db.catalog_sets(user.id)]
     categories = [dict(row) for row in db.catalog_categories()]
     starters = [item for item in sets if item["slug"] in {"introductions", "airport", "work-emails"}]
     channel=check_channel(user.id)
@@ -478,7 +494,7 @@ def catalog(category: str = Query("", max_length=40), q: str = Query("", max_len
     allowed = {item["slug"] for item in categories}
     if category and category not in allowed:
         raise HTTPException(422, "Unknown category")
-    channel=check_channel(user.id);sets=[catalog_set_json(row) for row in db.catalog_sets(user.id, category, q.strip())]
+    channel=check_channel(user.id);sets=[catalog_set_json(row,user.id) for row in db.catalog_sets(user.id, category, q.strip())]
     for item in sets:item["locked"]=not channel["subscribed"]
     return {"categories": categories,"sets":sets,"channel":channel}
 
@@ -488,11 +504,13 @@ def catalog_detail(slug: str, user: TelegramUser = Depends(current_user)):
     row = db.catalog_set(user.id, slug)
     if not row:
         raise HTTPException(404, "Slovo set not found")
-    result = catalog_set_json(row)
+    result = catalog_set_json(row,user.id)
     result["locked"]=not check_channel(user.id)["subscribed"]
     if result["locked"]:track(user.id,"channel_access_blocked",{"folder_id":result["folder_id"]},idempotency_key=f"channel-block:{user.id}:{result['folder_id']}:{int(time.time()//3600)}")
     else:track(user.id,"official_folder_opened",{"folder_id":result["folder_id"]},idempotency_key=f"official-open:{user.id}:{result['folder_id']}:{int(time.time()//60)}")
-    result["cards"] = [card_json(card) for card in db.catalog_cards(slug)]
+    language=preferred_language(user.id);ensure_catalog_localization(slug,language)
+    result["source_lang"]=language
+    result["cards"] = [card_json(card,user.id,language) for card in db.catalog_cards(slug)]
     return result
 
 
@@ -502,11 +520,12 @@ def attach_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
         row=db.catalog_set(user.id,slug)
         if row:track(user.id,"channel_access_blocked",{"folder_id":row["folder_id"]},idempotency_key=f"channel-block:{user.id}:{row['folder_id']}:{int(time.time()//3600)}")
         raise HTTPException(403,"channel_subscription_required")
+    ensure_catalog_localization(slug,preferred_language(user.id))
     folder_id = db.subscribe_set(user.id, slug)
     if not folder_id:
         raise HTTPException(404, "Slovo set not found")
     return {"ok": True, "folder_id": folder_id,
-            "set": catalog_set_json(db.catalog_set(user.id, slug))}
+            "set": catalog_set_json(db.catalog_set(user.id, slug),user.id)}
 
 
 @app.delete("/api/catalog/{slug}/attach")
@@ -519,9 +538,11 @@ def detach_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
 @app.post("/api/catalog/{slug}/copy", status_code=201)
 def copy_catalog_set(slug: str, user: TelegramUser = Depends(current_user)):
     if not check_channel(user.id)["subscribed"]:raise HTTPException(403,"channel_subscription_required")
+    language=preferred_language(user.id);ensure_catalog_localization(slug,language)
     folder_id = db.copy_catalog_set(user.id, slug)
     if not folder_id:
         raise HTTPException(404, "Slovo set not found")
+    db.localize_catalog_copy(folder_id,slug,language)
     track(user.id, "shared_folder_copied", {"folder_id": folder_id},
           idempotency_key=f"catalog-copy:{user.id}:{folder_id}")
     return folder_json(user.id, db.folder(user.id, folder_id))
@@ -558,7 +579,7 @@ def get_folder(folder_id: int, offset: int = Query(0, ge=0), limit: int = Query(
             member["avatar"] = {"url": f"/media/avatars/{member['custom_avatar_key']}" if member["custom_avatar_key"] else member["telegram_avatar_url"]}
             member.pop("custom_avatar_key", None); member.pop("telegram_avatar_url", None)
             members.append(member)
-    result.update({"cards": [card_json(card) for card in cards[:limit]], "offset": offset, "has_more": len(cards) > limit,
+    result.update({"cards": [card_json(card,user.id) for card in cards[:limit]], "offset": offset, "has_more": len(cards) > limit,
                    "members": members,"topics":[{**dict(row),"learned_count":int(row["learned_count"] or 0)} for row in db.topics(user.id,folder_id)]})
     return result
 
@@ -621,7 +642,7 @@ def delete_folder(folder_id: int, user: TelegramUser = Depends(current_user)):
 
 
 @app.post("/api/folders/{folder_id}/cards", status_code=201)
-def create_cards(folder_id: int, body: CardsCreate, user: TelegramUser = Depends(current_user)):
+def create_cards(folder_id: int, body: CardsCreate, background_tasks:BackgroundTasks,user: TelegramUser = Depends(current_user)):
     require_editor(user.id, folder_id)
     topic_id=body.topic_id
     if topic_id is not None:
@@ -637,6 +658,7 @@ def create_cards(folder_id: int, body: CardsCreate, user: TelegramUser = Depends
         except ValueError as exc:
             if str(exc) in {"topic_word_limit","invalid_topic"}: raise HTTPException(409, str(exc)) from exc
             raise
+        if os.getenv('LANGUAGE_ENRICHMENT_ENABLED','1')=='1':background_tasks.add_task(enrich_card_synonyms,inserted_ids)
         method = "single" if len(accepted) == 1 else "bulk"
         track(user.id, "word_added", {"folder_id": folder_id, "words_count": len(accepted), "input_method": method},
               idempotency_key=f"word-added:{user.id}:{folder_id}:{inserted_ids[0]}:{inserted_ids[-1]}")
@@ -659,7 +681,7 @@ def update_card(card_id: int, body: CardUpdate, user: TelegramUser = Depends(cur
     values = {"term": body.term.strip(), "translation": body.translation.strip(), "transcription": clean_optional(body.transcription)}
     for field, value in values.items():
         db.update_card(card_id, field, value)
-    return {"ok": True, "card": card_json(db.card(user.id, card_id))}
+    return {"ok": True, "card": card_json(db.card(user.id, card_id),user.id)}
 
 
 @app.delete("/api/cards/{card_id}")
@@ -671,24 +693,88 @@ def delete_card(card_id: int, user: TelegramUser = Depends(current_user)):
     return {"ok": True}
 
 
-def dictionary_lookup(term: str) -> tuple[str | None, str | None]:
-    """Free Dictionary API lookup, used on demand and persisted on the card."""
-    request = Request(f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(term)}", headers={"User-Agent": "Slovo/1.0"})
+def translate_texts(values:list[str],source:str,target:str)->list[str]:
+    """Best-effort public translation with a short timeout; callers always retain a safe fallback."""
+    if not values or source==target:return values
+    endpoint=os.getenv("TRANSLATION_API_URL","https://api.mymemory.translated.net/get")
+    joined="\n".join(values)
+    url=f"{endpoint}?{urlencode({'q':joined,'langpair':f'{source}|{target}'})}"
+    try:
+        with urlopen(Request(url,headers={"User-Agent":"Slovo/1.0"}),timeout=8) as response:data=json.load(response)
+        translated=str(data.get("responseData",{}).get("translatedText") or "").strip()
+        rows=translated.splitlines()
+        if len(rows)==len(values) and all(row.strip() for row in rows):return [row.strip() for row in rows]
+    except (HTTPError,URLError,TimeoutError,ValueError,OSError):pass
+    return values
+
+
+def dictionary_details(term:str,language:str='en')->tuple[str|None,str|None,list[str]]:
+    """Return pronunciation and a small deduplicated synonym list."""
+    request = Request(f"https://api.dictionaryapi.dev/api/v2/entries/{quote(language)}/{quote(term)}", headers={"User-Agent": "Slovo/1.0"})
     try:
         with urlopen(request, timeout=3) as response:  # noqa: S310 - fixed HTTPS host
             data = json.load(response)
-    except (HTTPError, URLError, TimeoutError, ValueError):
-        return None, None
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+        return None,None,[]
     if not isinstance(data, list) or not data:
-        return None, None
+        return None,None,[]
     entry = data[0]; transcription = entry.get("phonetic") or None; audio = None
+    synonyms=[]
     for phonetic in entry.get("phonetics", []):
         transcription = transcription or phonetic.get("text") or None
         if phonetic.get("audio"):
             audio = phonetic["audio"]
             if audio.startswith("//"): audio = "https:" + audio
             break
-    return transcription, audio
+    for meaning in entry.get("meanings",[]):
+        synonyms.extend(meaning.get("synonyms") or [])
+        for definition in meaning.get("definitions",[]):synonyms.extend(definition.get("synonyms") or [])
+    clean=[];seen={term.casefold()}
+    for value in synonyms:
+        value=str(value).strip()
+        if value and value.casefold() not in seen:seen.add(value.casefold());clean.append(value)
+        if len(clean)>=6:break
+    return transcription,audio,clean
+
+
+def dictionary_lookup(term: str) -> tuple[str | None, str | None]:
+    transcription,audio,_=dictionary_details(term,'en')
+    return transcription,audio
+
+
+def synonym_lookup(term:str,language:str)->list[str]:
+    _,_,synonyms=dictionary_details(term,language)
+    if synonyms or language=='en':return synonyms
+    english=translate_texts([term],language,'en')[0]
+    _,_,english_synonyms=dictionary_details(english,'en')
+    return translate_texts(english_synonyms,'en',language) if english_synonyms else []
+
+
+def enrich_card_synonyms(card_ids:list[int])->None:
+    for card_id in card_ids:
+        with db.conn() as con:row=con.execute("SELECT c.term,f.source_lang FROM cards c JOIN folders f ON f.id=c.folder_id WHERE c.id=?",(card_id,)).fetchone()
+        if not row:continue
+        synonyms=synonym_lookup(row["term"],row["source_lang"])
+        db.update_card(card_id,"synonyms",json.dumps(synonyms,ensure_ascii=False))
+
+
+def ensure_catalog_localization(slug:str,language:str)->None:
+    if language=='en':return
+    cards=db.catalog_cards(slug);missing=[card for card in cards if not db.catalog_translation(card["id"],language)]
+    if not missing:return
+    originals=[card["term"] for card in missing];translated=translate_texts(originals,'en',language)
+    if translated==originals:return
+    for card,term in zip(missing,translated):
+        try:base_synonyms=json.loads(card["synonyms"] or '[]')
+        except (TypeError,ValueError):base_synonyms=[]
+        synonyms=translate_texts(base_synonyms,'en',language) if base_synonyms else []
+        db.save_catalog_translation(card["id"],language,term,synonyms)
+
+
+def prepare_official_sets(user_id:int)->None:
+    language=preferred_language(user_id)
+    if language=='en':return
+    for row in db.catalog_sets(user_id):ensure_catalog_localization(row["slug"],language)
 
 
 def enrich_folder_pronunciations(folder_id: int) -> None:
@@ -954,15 +1040,16 @@ def session_json(user_id: int, session_id: str) -> dict:
     card = db.card(user_id, session["current_card"])
     if not card:
         db.advance(session_id); return session_json(user_id, session_id)
-    folder = require_folder(user_id, session["folder_id"]); reverse = session["mode"].endswith(":rev")
-    front_lang = folder["target_lang"] if reverse else folder["source_lang"]
+    folder = require_folder(user_id, session["folder_id"]); localized=card_json(card,user_id);reverse = session["mode"].endswith(":rev")
+    source_lang=preferred_language(user_id) if folder["is_official"] else folder["source_lang"]
+    front_lang = folder["target_lang"] if reverse else source_lang
     return {"id": session_id, "folder_id": session["folder_id"], "done": False,
             "position": session["pos"] + 1, "total": total, "attempts": stats["attempts"] or 0,
-            "card_id": card["id"], "front": card["translation"] if reverse else card["term"],
-            "back": card["term"] if reverse else card["translation"], "front_lang": front_lang,
-            "transcription": None if reverse else card["transcription"], "audio_url": None if reverse else card["audio_url"],
-            "details_transcription": card["transcription"], "detail_term": card["term"],
-            "detail_lang": folder["source_lang"], "detail_audio_url": card["audio_url"],
+            "card_id": card["id"], "front": localized["translation"] if reverse else localized["term"],
+            "back": localized["term"] if reverse else localized["translation"], "front_lang": front_lang,
+            "transcription": None if reverse else localized["transcription"], "audio_url": None if reverse else localized["audio_url"],
+            "details_transcription": localized["transcription"], "detail_term": localized["term"],
+            "detail_lang": source_lang, "detail_audio_url": localized["audio_url"],"synonyms":localized["synonyms"],
             "study_format": session["study_format"], "mode": session["mode"].split(":",1)[0]}
 
 
@@ -1017,7 +1104,7 @@ def check_study(session_id: str, body: StudyCheck, user: TelegramUser = Depends(
     if not session or not session["current_card"]: raise HTTPException(409, "This study session has ended")
     card = db.card(user.id, session["current_card"])
     if not card: raise HTTPException(409, "This word is no longer available")
-    reverse = session["mode"].endswith(":rev"); correct = card["term"] if reverse else card["translation"]
+    localized=card_json(card,user.id);reverse = session["mode"].endswith(":rev"); correct = localized["term"] if reverse else localized["translation"]
     given = normalize_answer(body.answer); variants = answer_variants(correct)
     if not given: return {"verdict": "empty", "correct_answer": correct}
     if given in variants: return {"verdict": "correct", "correct_answer": correct}
@@ -1073,7 +1160,7 @@ def _game_cards(user_id: int, folder_id: int,topic_id:int|None=None) -> list[dic
     require_folder(user_id, folder_id)
     rows=db.cards(folder_id, limit=10000, user_id=user_id)
     if topic_id is not None:rows=[row for row in rows if row["topic_id"]==topic_id]
-    return [card_json(row) for row in rows]
+    return [card_json(row,user_id) for row in rows]
 
 
 def _unambiguous(cards: list[dict]) -> list[dict]:
@@ -1096,6 +1183,7 @@ def _unambiguous(cards: list[dict]) -> list[dict]:
 
 def _game_snapshot(user_id: int, folder_id: int, game_type: str, requested: list[int] | None = None,topic_id:int|None=None) -> tuple[dict, dict]:
     folder = require_folder(user_id, folder_id)
+    source_lang=preferred_language(user_id) if folder["is_official"] else folder["source_lang"]
     cards = _game_cards(user_id, folder_id,topic_id)
     if requested is not None:
         requested_set = set(requested)
@@ -1114,12 +1202,12 @@ def _game_snapshot(user_id: int, folder_id: int, game_type: str, requested: list
             wrong = [other for other in eligible if other["id"] != card["id"]]
             choices = rng.sample(wrong, 3) + [card]; rng.shuffle(choices)
             questions.append({**card, "choices": [{"card_id": item["id"], "translation": item["translation"]} for item in choices]})
-        return {"cards": questions, "source_lang": folder["source_lang"]}, {"pos": 0, "responses": {}, "correct": 0, "wrong": 0, "unknown": 0, "skipped": 0, "mistakes": []}
-    if folder["source_lang"] != "en": raise HTTPException(409, "build_english_only")
+        return {"cards": questions, "source_lang": source_lang}, {"pos": 0, "responses": {}, "correct": 0, "wrong": 0, "unknown": 0, "skipped": 0, "mistakes": []}
+    if source_lang != "en": raise HTTPException(409, "build_english_only")
     eligible = [card for card in cards if re.fullmatch(r"[A-Za-z]{3,12}", card["term"])]
     rng.shuffle(eligible); selected = eligible[:10]
     if not selected: raise HTTPException(409, "build_no_words")
-    return {"cards": selected, "source_lang": folder["source_lang"]}, {"pos": 0, "responses": {}, "had_error": [], "hints": [], "first": 0, "helped": 0, "unknown": 0, "mistakes": []}
+    return {"cards": selected, "source_lang": source_lang}, {"pos": 0, "responses": {}, "had_error": [], "hints": [], "first": 0, "helped": 0, "unknown": 0, "mistakes": []}
 
 
 def _active_tick(row, now) -> int:

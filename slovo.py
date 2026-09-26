@@ -1,6 +1,7 @@
 """Slovo: a small shared vocabulary bot. Run: python slovo.py"""
 import asyncio
 import html
+import json
 import logging
 import os
 import secrets
@@ -301,6 +302,7 @@ CREATE TABLE IF NOT EXISTS assignment_recipients (
             if 'is_official' not in folder_cols:c.execute("ALTER TABLE folders ADD COLUMN is_official INTEGER NOT NULL DEFAULT 0")
             for column in ('transcription','example','example_translation','audio_url'):
                 if column not in card_cols:c.execute(f"ALTER TABLE cards ADD COLUMN {column} TEXT")
+            if 'synonyms' not in card_cols:c.execute("ALTER TABLE cards ADD COLUMN synonyms TEXT NOT NULL DEFAULT '[]'")
             if 'topic_id' not in card_cols:c.execute("ALTER TABLE cards ADD COLUMN topic_id INTEGER")
             if 'first_learned_at' not in progress_cols:c.execute("ALTER TABLE progress ADD COLUMN first_learned_at TEXT")
             for column,definition in {'success_count':'INTEGER NOT NULL DEFAULT 0','error_count':'INTEGER NOT NULL DEFAULT 0','distinct_days':'INTEGER NOT NULL DEFAULT 0','mastery_score':'INTEGER NOT NULL DEFAULT 0','mastery_status':"TEXT NOT NULL DEFAULT 'new'"}.items():
@@ -344,6 +346,15 @@ CREATE INDEX IF NOT EXISTS idx_classes_teacher ON classes(teacher_user_id,active
 CREATE INDEX IF NOT EXISTS idx_class_members_user ON class_members(user_id,status,class_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_class ON assignments(class_id,active,id);
 CREATE INDEX IF NOT EXISTS idx_assignment_recipients_user ON assignment_recipients(user_id,status,assignment_id);
+CREATE TABLE IF NOT EXISTS catalog_card_translations (
+ card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+ language TEXT NOT NULL,
+ term TEXT NOT NULL,
+ synonyms TEXT NOT NULL DEFAULT '[]',
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(card_id,language)
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_card_translations_language ON catalog_card_translations(language,card_id);
 ''')
             migration_path=Path(__file__).resolve().parent/'migrations'/'001_product_analytics.sql'
             if migration_path.exists():
@@ -359,6 +370,8 @@ CREATE INDEX IF NOT EXISTS idx_assignment_recipients_user ON assignment_recipien
                 c.execute("UPDATE users SET onboarding_completed_at=NULL,onboarding_step=0")
                 if learning_profile_path.exists():c.executescript(learning_profile_path.read_text(encoding='utf-8'))
                 else:c.execute("INSERT INTO schema_migrations(version) VALUES('003_learning_profile')")
+            enrichment_path=Path(__file__).resolve().parent/'migrations'/'004_language_enrichment.sql'
+            if enrichment_path.exists():c.executescript(enrichment_path.read_text(encoding='utf-8'))
             from catalog_data import seed_catalog
             seed_catalog(c)
             # Users that existed before attribution was introduced are organic.
@@ -519,6 +532,11 @@ LEFT JOIN user_set_subscriptions sub ON sub.set_slug=cs.slug AND sub.user_id=?
     def catalog_cards(self,slug):
         with self.conn() as c:return c.execute('''SELECT c.* FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id
 WHERE cc.set_slug=? ORDER BY cc.position''',(slug,)).fetchall()
+    def catalog_translation(self,card_id,language):
+        with self.conn() as c:return c.execute("SELECT * FROM catalog_card_translations WHERE card_id=? AND language=?",(card_id,language)).fetchone()
+    def save_catalog_translation(self,card_id,language,term,synonyms=None):
+        with self.conn() as c:c.execute('''INSERT INTO catalog_card_translations(card_id,language,term,synonyms) VALUES(?,?,?,?)
+ON CONFLICT(card_id,language) DO UPDATE SET term=excluded.term,synonyms=excluded.synonyms,updated_at=CURRENT_TIMESTAMP''',(card_id,language,term,json.dumps(synonyms or [],ensure_ascii=False)))
     def subscribe_set(self,u,slug):
         with self.conn() as c:
             row=c.execute("SELECT folder_id FROM catalog_sets WHERE slug=?",(slug,)).fetchone()
@@ -541,10 +559,23 @@ ON CONFLICT(user_id,set_slug) DO UPDATE SET active=1,updated_at=CURRENT_TIMESTAM
             folder_id=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(f"{source['title']} — копия",u,'en','ru')).lastrowid
             c.execute("INSERT INTO memberships(folder_id,user_id,role) VALUES(?,?,?)",(folder_id,u,'owner'))
             topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,'Без темы',1,0,?)",(folder_id,u)).lastrowid
-            c.execute('''INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,audio_url,created_by)
-SELECT ?,?,c.term,c.translation,c.transcription,c.example,c.example_translation,c.audio_url,?
+            c.execute('''INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,audio_url,synonyms,created_by)
+SELECT ?,?,c.term,c.translation,c.transcription,c.example,c.example_translation,c.audio_url,c.synonyms,?
 FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER BY cc.position''',(folder_id,topic_id,u,slug))
             return folder_id
+    def localize_catalog_copy(self,folder_id,slug,language):
+        if language=='en':return
+        with self.conn() as c:
+            source=c.execute("SELECT target_lang FROM folders WHERE id=?",(folder_id,)).fetchone()
+            if not source:return
+            c.execute("UPDATE folders SET source_lang=? WHERE id=?",(language,folder_id))
+            copied=c.execute("SELECT id FROM cards WHERE folder_id=? ORDER BY id",(folder_id,)).fetchall()
+            originals=c.execute('''SELECT tr.term,tr.synonyms FROM catalog_cards cc
+LEFT JOIN catalog_card_translations tr ON tr.card_id=cc.card_id AND tr.language=?
+WHERE cc.set_slug=? ORDER BY cc.position''',(language,slug)).fetchall()
+            for card,row in zip(copied,originals):
+                if row['term'] is not None:
+                    c.execute("UPDATE cards SET term=?,synonyms=? WHERE id=?",(row['term'],row['synonyms'],card['id']))
     def set_folder_languages(self,f,source,target):
         with self.conn() as c:c.execute("UPDATE folders SET source_lang=?,target_lang=? WHERE id=?",(source,target,f))
     def profile_stats(self,u):
@@ -655,7 +686,7 @@ EXISTS(SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assi
     def duplicate(self,f,term,tr):
         with self.conn() as c:return c.execute("SELECT id FROM cards WHERE folder_id=? AND lower(term)=lower(?) AND lower(translation)=lower(?)",(f,term,tr)).fetchone()
     def update_card(self,cid,field,value):
-        if field not in {'term','translation','transcription','example','example_translation','audio_url'}:raise ValueError('Unsupported card field')
+        if field not in {'term','translation','transcription','example','example_translation','audio_url','synonyms'}:raise ValueError('Unsupported card field')
         with self.conn() as c:c.execute(f"UPDATE cards SET {field}=? WHERE id=?",(value,cid))
     def delete_card(self,cid):
         with self.conn() as c:c.execute("DELETE FROM cards WHERE id=?",(cid,))

@@ -72,6 +72,7 @@
 .class-progress-card{display:grid;gap:9px;padding:16px;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--surface)}
 .class-progress-card>div:first-child{display:flex;justify-content:space-between;gap:12px}
 .class-progress-card small{color:var(--muted);line-height:1.45}
+.word-copy .synonyms{display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.4}
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {

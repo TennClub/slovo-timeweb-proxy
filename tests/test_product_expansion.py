@@ -183,5 +183,30 @@ def test_19_catalog_copy_assigns_every_word_to_a_topic(tmp_path, monkeypatch):
     assert database.topics(101, folder)[0]["name"] == "Без темы"
 
 
+def test_20_new_cards_receive_cached_synonyms(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch);folder=database.create_folder(101,"Spanish","es","ru")
+    topic=database.topics(101,folder)[0]["id"]
+    monkeypatch.setenv("LANGUAGE_ENRICHMENT_ENABLED","1")
+    monkeypatch.setattr(webapp,"synonym_lookup",lambda term,language:["alegre","contento"] if (term,language)==("feliz","es") else [])
+    response=client.post(f"/api/folders/{folder}/cards",json={"topic_id":topic,"items":[{"term":"feliz","translation":"счастливый"}]})
+    assert response.status_code==201
+    card=client.get(f"/api/folders/{folder}").json()["cards"][0]
+    assert card["synonyms"]==["alegre","contento"]
+
+
+def test_21_onboarding_language_localizes_official_sets_and_study(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("LANGUAGE_ENRICHMENT_ENABLED","1")
+    monkeypatch.setattr(webapp,"translate_texts",lambda values,source,target:[f"{target}:{value}" for value in values])
+    response=client.patch("/api/onboarding",json={"step":5,"usage_role":"student","languages":["es"],"levels":["a1"],"complete":True})
+    assert response.status_code==200
+    detail=client.get("/api/catalog/airport").json()
+    assert detail["source_lang"]=="es" and detail["cards"][0]["term"].startswith("es:")
+    attached=client.post("/api/catalog/airport/attach").json();folder=attached["folder_id"]
+    topic=database.topics(101,folder)[0]["id"]
+    session=client.post("/api/study",json={"folder_id":folder,"topic_id":topic,"mode":"all"}).json()
+    assert session["front_lang"]=="es" and session["front"].startswith("es:")
+
+
 def teardown_module():
     webapp.app.dependency_overrides.clear()
