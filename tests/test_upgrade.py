@@ -47,7 +47,9 @@ def test_migration_preserves_existing_cards(tmp_path):
         assert profile["onboarding_completed_at"] is None and profile["onboarding_step"] == 0
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='003_learning_profile'").fetchone()
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='004_language_enrichment'").fetchone()
+        assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='005_topic_navigation'").fetchone()
         assert migrated.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_card_translations'").fetchone()
+        assert migrated.execute("SELECT name FROM topics WHERE folder_id=1").fetchone()[0] == "Тема 1"
         assert migrated.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
     database.save_onboarding(1, 5, usage_role="teacher", languages=["en"], levels=["b1"], complete=True)
@@ -284,7 +286,8 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=20" in html and "app.js?v=20" in html
+    assert "styles.css?v=21" in html and "app.js?v=21" in html
+    assert "function renderTopic" in js and "class=\"breadcrumbs\"" in js
     assert "fonts.googleapis.com" not in html
     assert "· +" not in js
     assert "-webkit-line-clamp: 2" in css

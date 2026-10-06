@@ -24,7 +24,7 @@ def use(user_id, name):
 def test_01_new_folder_has_system_topic(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch)
     folder = client.post("/api/folders", json={"name": "IELTS", "source_lang": "en", "target_lang": "ru"}).json()
-    assert [(x["name"], x["is_system"]) for x in database.topics(101, folder["id"])] == [("Без темы", 1)]
+    assert [(x["name"], x["is_system"]) for x in database.topics(101, folder["id"])] == [("Тема 1", 1)]
 
 
 def test_02_bulk_words_split_into_topics_without_loss(tmp_path, monkeypatch):
@@ -46,6 +46,18 @@ def test_04_create_and_rename_topic(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Topics")
     topic = client.post(f"/api/folders/{folder}/topics", json={"name": "Travel"}).json()
     assert client.patch(f"/api/topics/{topic['id']}", json={"name": "Airport"}).json()["name"] == "Airport"
+
+
+def test_04b_default_topic_can_be_renamed_and_deleted_losslessly(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Editable topics")
+    default = database.topics(101, folder)[0]
+    assert client.patch(f"/api/topics/{default['id']}", json={"name": "Basics"}).status_code == 200
+    assert database.topic(101, default["id"])["is_system"] == 0
+    assert client.post(f"/api/topics/{default['id']}/delete", json={}).json()["detail"] == "last_topic"
+    target = database.create_topic(101, folder, "Travel")
+    card = database.add_cards(101, folder, [("hello", "привет")], default["id"])[0]
+    assert client.post(f"/api/topics/{default['id']}/delete", json={"target_topic_id": target}).status_code == 200
+    assert database.card(101, card)["topic_id"] == target
 
 
 def test_05_move_word_between_topics(tmp_path, monkeypatch):
@@ -180,7 +192,7 @@ def test_19_catalog_copy_assigns_every_word_to_a_topic(tmp_path, monkeypatch):
     folder = response.json()["id"]
     cards = database.cards(folder)
     assert cards and all(card["topic_id"] for card in cards)
-    assert database.topics(101, folder)[0]["name"] == "Без темы"
+    assert database.topics(101, folder)[0]["name"] == "Тема 1"
 
 
 def test_20_new_cards_receive_cached_synonyms(tmp_path, monkeypatch):

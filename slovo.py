@@ -388,6 +388,16 @@ acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
                     topic_id=c.execute("SELECT id FROM topics WHERE folder_id=? AND name=?",(folder['id'],name)).fetchone()[0]
                     marks=','.join('?' for _ in orphan_ids[index:index+MAX_CARDS_PER_TOPIC])
                     if marks:c.execute(f"UPDATE cards SET topic_id=? WHERE id IN ({marks})",[topic_id]+orphan_ids[index:index+MAX_CARDS_PER_TOPIC])
+            topic_navigation_pending=not c.execute("SELECT 1 FROM schema_migrations WHERE version='005_topic_navigation'").fetchone()
+            if topic_navigation_pending:
+                for folder in c.execute("SELECT DISTINCT folder_id FROM topics WHERE is_system=1 ORDER BY folder_id").fetchall():
+                    rows=c.execute("SELECT id FROM topics WHERE folder_id=? AND is_system=1 ORDER BY position,id",(folder['folder_id'],)).fetchall()
+                    for number,row in enumerate(rows,1):
+                        base=f'Тема {number}';name=base;suffix=2
+                        while c.execute("SELECT 1 FROM topics WHERE folder_id=? AND name=? AND id<>?",(folder['folder_id'],name,row['id'])).fetchone():
+                            name=f'{base} ({suffix})';suffix+=1
+                        c.execute("UPDATE topics SET name=? WHERE id=?",(name,row['id']))
+                c.execute("INSERT INTO schema_migrations(version) VALUES('005_topic_navigation')")
             c.execute("UPDATE folders SET is_official=1 WHERE id IN (SELECT folder_id FROM catalog_sets)")
 
     def user(self, tg_id, name="", telegram_avatar_url=None, ref_code='organic', acquisition_source='organic'):
@@ -474,7 +484,7 @@ WHERE telegram_id=?''',(step,usage_role,json.dumps(purposes,ensure_ascii=False) 
         with self.conn() as c:c.execute("INSERT OR IGNORE INTO request_deduplication(user_id,operation,request_id,response) VALUES(?,?,?,?)",(u,operation,request_id,response))
     def create_folder(self,u,name,source_lang='en',target_lang='ru'):
         with self.conn() as c:
-            cur=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(name,u,source_lang,target_lang)); f=cur.lastrowid;c.execute("INSERT INTO memberships VALUES(?,?,?)",(f,u,"owner"));c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?, 'Без темы',1,0,?)",(f,u));return f
+            cur=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(name,u,source_lang,target_lang)); f=cur.lastrowid;c.execute("INSERT INTO memberships VALUES(?,?,?)",(f,u,"owner"));c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?, 'Тема 1',1,0,?)",(f,u));return f
     def topics(self,u,f):
         with self.conn() as c:return c.execute('''SELECT t.*,COUNT(cd.id) word_count,SUM(CASE WHEN p.last_success IS NOT NULL THEN 1 ELSE 0 END) learned_count
 FROM topics t JOIN memberships m ON m.folder_id=t.folder_id AND m.user_id=? LEFT JOIN cards cd ON cd.topic_id=t.id
@@ -486,7 +496,7 @@ LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=? WHERE t.folder_id=? GROU
             position=c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM topics WHERE folder_id=?",(f,)).fetchone()[0]
             cur=c.execute("INSERT INTO topics(folder_id,name,position,created_by) VALUES(?,?,?,?)",(f,name,position,u));return cur.lastrowid
     def rename_topic(self,topic_id,name):
-        with self.conn() as c:c.execute("UPDATE topics SET name=? WHERE id=?",(name,topic_id))
+        with self.conn() as c:c.execute("UPDATE topics SET name=?,is_system=0 WHERE id=?",(name,topic_id))
     def move_card(self,card_id,topic_id):
         with self.conn() as c:
             topic=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(topic_id,topic_id)).fetchone()
@@ -496,8 +506,9 @@ LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=? WHERE t.folder_id=? GROU
             c.execute("UPDATE cards SET topic_id=? WHERE id=?",(topic_id,card_id))
     def delete_topic(self,topic_id,target_topic_id=None):
         with self.conn() as c:
-            row=c.execute("SELECT folder_id,is_system FROM topics WHERE id=?",(topic_id,)).fetchone()
-            if not row or row['is_system']:raise ValueError('system_topic')
+            row=c.execute("SELECT folder_id FROM topics WHERE id=?",(topic_id,)).fetchone()
+            if not row:raise ValueError('invalid_topic')
+            if c.execute("SELECT COUNT(*) FROM topics WHERE folder_id=?",(row['folder_id'],)).fetchone()[0]<=1:raise ValueError('last_topic')
             count=c.execute("SELECT COUNT(*) FROM cards WHERE topic_id=?",(topic_id,)).fetchone()[0]
             if count:
                 if not target_topic_id:raise ValueError('topic_not_empty')
@@ -558,7 +569,7 @@ ON CONFLICT(user_id,set_slug) DO UPDATE SET active=1,updated_at=CURRENT_TIMESTAM
             if not source:return None
             folder_id=c.execute("INSERT INTO folders(name,owner_id,source_lang,target_lang) VALUES(?,?,?,?)",(f"{source['title']} — копия",u,'en','ru')).lastrowid
             c.execute("INSERT INTO memberships(folder_id,user_id,role) VALUES(?,?,?)",(folder_id,u,'owner'))
-            topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,'Без темы',1,0,?)",(folder_id,u)).lastrowid
+            topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,'Тема 1',1,0,?)",(folder_id,u)).lastrowid
             c.execute('''INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,audio_url,synonyms,created_by)
 SELECT ?,?,c.term,c.translation,c.transcription,c.example,c.example_translation,c.audio_url,c.synonyms,?
 FROM catalog_cards cc JOIN cards c ON c.id=cc.card_id WHERE cc.set_slug=? ORDER BY cc.position''',(folder_id,topic_id,u,slug))
@@ -673,7 +684,7 @@ EXISTS(SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assi
                         target=c.execute("SELECT t.id,COUNT(cd.id) n FROM topics t LEFT JOIN cards cd ON cd.topic_id=t.id WHERE t.folder_id=? GROUP BY t.id HAVING n<? ORDER BY t.is_system DESC,t.position,t.id LIMIT 1",(f,MAX_CARDS_PER_TOPIC)).fetchone()
                         if not target:
                             position=c.execute("SELECT COALESCE(MAX(position),-1)+1 FROM topics WHERE folder_id=?",(f,)).fetchone()[0]
-                            base='Без темы';name=base if position==0 else f'{base} {position+1}'
+                            base='Тема';name=f'{base} {position+1}'
                             while c.execute("SELECT 1 FROM topics WHERE folder_id=? AND name=?",(f,name)).fetchone():position+=1;name=f'{base} {position+1}'
                             topic_id=c.execute("INSERT INTO topics(folder_id,name,is_system,position,created_by) VALUES(?,?,1,?,?)",(f,name,position,u)).lastrowid
                         else:topic_id=target['id']

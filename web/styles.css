@@ -73,6 +73,24 @@
 .class-progress-card>div:first-child{display:flex;justify-content:space-between;gap:12px}
 .class-progress-card small{color:var(--muted);line-height:1.45}
 .word-copy .synonyms{display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.4}
+.topic-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.topic-grid .topic-item{position:relative;min-width:0}
+.topic-grid .topic-card{width:100%;min-height:118px;display:grid;grid-template-columns:48px minmax(0,1fr) 24px;gap:12px;align-items:center;padding:18px 54px 18px 18px;text-align:start;border:1.5px solid var(--text);border-radius:var(--radius-card);background:transparent;color:var(--text)}
+.topic-grid .topic-card:hover{background:color-mix(in srgb,var(--surface) 84%,var(--badge-bg))}
+.topic-icon{width:48px;height:48px;display:grid;place-items:center;border-radius:50%;color:var(--action-text);background:var(--action-bg)}
+.topic-copy{min-width:0}
+.topic-copy b,.topic-copy small{display:block;overflow-wrap:anywhere}
+.topic-copy b{font:var(--caldera-weight-display) 24px/1 var(--display);letter-spacing:.02em;text-transform:uppercase}
+.topic-copy small{margin-top:7px;color:var(--muted);line-height:1.35}
+.topic-arrow{display:grid;place-items:center;color:var(--muted)}
+.topic-grid .topic-more{top:10px;right:10px}
+.breadcrumbs{min-height:48px;display:flex;align-items:center;gap:8px;margin:0 0 14px;color:var(--muted);overflow:hidden}
+.breadcrumbs button{min-width:0;max-width:48%;padding:8px 0;border:0;background:transparent;color:var(--text);font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.breadcrumbs span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.breadcrumbs .icon{flex:0 0 auto}
+.breadcrumbs.skeleton{width:min(360px,80%);border-radius:var(--radius-pill)}
+.topic-header{border:1.5px solid var(--text);background:transparent}
+.topic-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -446,6 +464,8 @@ summary { min-height: 30px; cursor: pointer; }
   .set-hero { grid-template-columns: 1fr; }
   .set-hero .set-art.large { width: 78px; height: 78px; border-radius: var(--radius-medium); }
   .folder-header h1 { font-size: clamp(38px, 12vw, 52px); }
+  .topic-grid { grid-template-columns: 1fr; }
+  .topic-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bottom-nav { width: calc(100% - 16px); bottom: max(6px, env(safe-area-inset-bottom)); }
   .nav-item { min-height: 60px; }
 }
