@@ -72,6 +72,40 @@ def test_05_move_word_between_topics(tmp_path, monkeypatch):
     assert client.patch(f"/api/cards/{card}/topic", json={"topic_id": second}).json()["topic_id"] == second
 
 
+def test_05b_bulk_move_and_delete_words_between_folders(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch)
+    source = database.create_folder(101, "Source")
+    target = database.create_folder(101, "Target")
+    source_topic = database.topics(101, source)[0]["id"]
+    target_topic = database.topics(101, target)[0]["id"]
+    selected = database.add_cards(101, source, [("one", "один"), ("two", "два")], source_topic)
+    database.add_cards(101, target, [(f"w{i}", f"t{i}") for i in range(49)], target_topic)
+
+    full = client.post("/api/cards/bulk-move", json={"card_ids": selected, "target_folder_id": target, "target_topic_id": target_topic})
+    assert full.status_code == 409 and full.json()["detail"] == "folder_word_limit"
+    assert database.card_count(source) == 2 and database.card_count(target) == 49
+
+    database.delete_card(database.cards(target, limit=1)[0]["id"])
+    moved = client.post("/api/cards/bulk-move", json={"card_ids": selected, "target_folder_id": target, "target_topic_id": target_topic})
+    assert moved.status_code == 200 and moved.json()["moved"] == 2
+    assert database.card_count(source) == 0 and database.card_count(target) == 50
+
+    deleted = client.post("/api/cards/bulk-delete", json={"card_ids": selected})
+    assert deleted.status_code == 200 and deleted.json()["deleted"] == 2
+    assert database.card_count(target) == 48
+
+
+def test_05c_bulk_actions_require_editor_access(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch)
+    folder = database.create_folder(101, "Protected")
+    topic = database.topics(101, folder)[0]["id"]
+    card = database.add_cards(101, folder, [("one", "один")], topic)[0]
+    database.join(202, database.create_invite(101, folder, "member"))
+    use(202, "Student")
+    assert client.post("/api/cards/bulk-delete", json={"card_ids": [card]}).status_code == 403
+    assert database.card_count(folder) == 1
+
+
 def test_06_study_is_scoped_to_topic(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Study")
     one = database.topics(101, folder)[0]["id"]; two = database.create_topic(101, folder, "Two")

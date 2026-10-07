@@ -511,6 +511,32 @@ LEFT JOIN progress p ON p.card_id=cd.id AND p.user_id=? WHERE t.folder_id=? GROU
             if not topic or not card or topic['folder_id']!=card['folder_id']:raise ValueError('invalid_topic')
             if topic['n']>=MAX_CARDS_PER_TOPIC:raise ValueError('topic_word_limit')
             c.execute("UPDATE cards SET topic_id=? WHERE id=?",(topic_id,card_id))
+    def card_locations(self,card_ids):
+        ids=list(dict.fromkeys(int(card_id) for card_id in card_ids))
+        if not ids:return []
+        marks=','.join('?' for _ in ids)
+        with self.conn() as c:return c.execute(f"SELECT id,folder_id,topic_id FROM cards WHERE id IN ({marks})",ids).fetchall()
+    def delete_cards(self,card_ids):
+        ids=list(dict.fromkeys(int(card_id) for card_id in card_ids))
+        if not ids:return 0
+        marks=','.join('?' for _ in ids)
+        with self.conn() as c:return c.execute(f"DELETE FROM cards WHERE id IN ({marks})",ids).rowcount
+    def move_cards(self,card_ids,target_folder_id,target_topic_id):
+        ids=list(dict.fromkeys(int(card_id) for card_id in card_ids))
+        if not ids:return 0
+        marks=','.join('?' for _ in ids)
+        with self.conn() as c:
+            rows=c.execute(f"SELECT id,folder_id,topic_id FROM cards WHERE id IN ({marks})",ids).fetchall()
+            if len(rows)!=len(ids):raise ValueError('cards_not_found')
+            topic=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(target_topic_id,target_topic_id)).fetchone()
+            if not topic or topic['folder_id']!=target_folder_id:raise ValueError('invalid_topic')
+            incoming_folder=sum(row['folder_id']!=target_folder_id for row in rows)
+            incoming_topic=sum(row['topic_id']!=target_topic_id for row in rows)
+            folder_count=c.execute("SELECT COUNT(*) FROM cards WHERE folder_id=?",(target_folder_id,)).fetchone()[0]
+            if folder_count+incoming_folder>MAX_CARDS_PER_FOLDER:raise ValueError('folder_word_limit')
+            if topic['n']+incoming_topic>MAX_CARDS_PER_TOPIC:raise ValueError('topic_word_limit')
+            c.execute(f"UPDATE cards SET folder_id=?,topic_id=? WHERE id IN ({marks})",[target_folder_id,target_topic_id,*ids])
+            return len(ids)
     def delete_topic(self,topic_id,target_topic_id=None):
         with self.conn() as c:
             row=c.execute("SELECT folder_id FROM topics WHERE id=?",(topic_id,)).fetchone()

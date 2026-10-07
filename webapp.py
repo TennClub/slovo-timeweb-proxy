@@ -182,6 +182,13 @@ class TopicDelete(BaseModel):
 class CardMove(BaseModel):
     topic_id: int
 
+class CardsBulkDelete(BaseModel):
+    card_ids: list[int] = Field(min_length=1,max_length=50)
+
+class CardsBulkMove(CardsBulkDelete):
+    target_folder_id: int
+    target_topic_id: int
+
 class OnboardingUpdate(BaseModel):
     step: int = Field(ge=1,le=5)
     usage_role: Literal['student','teacher','self'] | None = None
@@ -621,6 +628,28 @@ def move_card(card_id:int,body:CardMove,user:TelegramUser=Depends(current_user))
     try:db.move_card(card_id,body.topic_id)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     return {"ok":True,"topic_id":body.topic_id}
+
+
+@app.post("/api/cards/bulk-delete")
+def bulk_delete_cards(body:CardsBulkDelete,user:TelegramUser=Depends(current_user)):
+    rows=db.card_locations(body.card_ids)
+    if len(rows)!=len(set(body.card_ids)):raise HTTPException(404,"Card not found")
+    for folder_id in {row["folder_id"] for row in rows}:require_editor(user.id,folder_id)
+    deleted=db.delete_cards(body.card_ids)
+    return {"ok":True,"deleted":deleted}
+
+
+@app.post("/api/cards/bulk-move")
+def bulk_move_cards(body:CardsBulkMove,user:TelegramUser=Depends(current_user)):
+    rows=db.card_locations(body.card_ids)
+    if len(rows)!=len(set(body.card_ids)):raise HTTPException(404,"Card not found")
+    for folder_id in {row["folder_id"] for row in rows}:require_editor(user.id,folder_id)
+    require_editor(user.id,body.target_folder_id)
+    topic=db.topic(user.id,body.target_topic_id)
+    if not topic or topic["folder_id"]!=body.target_folder_id:raise HTTPException(422,"invalid_topic")
+    try:moved=db.move_cards(body.card_ids,body.target_folder_id,body.target_topic_id)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+    return {"ok":True,"moved":moved,"folder_id":body.target_folder_id,"topic_id":body.target_topic_id}
 
 
 @app.patch("/api/folders/{folder_id}")
