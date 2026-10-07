@@ -149,6 +149,7 @@ class StudyCreate(BaseModel):
     study_format: Literal["cards", "typing"] = "cards"
     timezone_offset: int = Field(default=0, ge=-840, le=840)
     topic_id: int | None = None
+    all_topics: bool = False
     assignment_id: int | None = None
 
 
@@ -1054,19 +1055,22 @@ def session_json(user_id: int, session_id: str) -> dict:
 
 
 @app.get("/api/study/unfinished")
-def unfinished_study(folder_id: int,topic_id:int|None=None, user: TelegramUser = Depends(current_user)):
+def unfinished_study(folder_id: int,topic_id:int|None=None,all_topics:bool=False, user: TelegramUser = Depends(current_user)):
     require_folder(user.id, folder_id)
-    if topic_id is None:raise HTTPException(422,"topic_required")
-    topic=db.topic(user.id,topic_id)
-    if not topic or topic["folder_id"]!=folder_id:raise HTTPException(422,"invalid_topic")
-    row = db.unfinished_session(user.id, folder_id,topic_id)
+    if topic_id is None and not all_topics:raise HTTPException(422,"topic_required")
+    if topic_id is not None:
+        if all_topics:raise HTTPException(422,"invalid_topic_scope")
+        topic=db.topic(user.id,topic_id)
+        if not topic or topic["folder_id"]!=folder_id:raise HTTPException(422,"invalid_topic")
+    row = db.unfinished_session(user.id, folder_id,topic_id,all_topics)
     return session_json(user.id, row["id"]) if row else {"id": None}
 
 
 @app.post("/api/study", status_code=201)
 def create_study(body: StudyCreate, user: TelegramUser = Depends(current_user)):
     require_folder(user.id, body.folder_id); db.set_timezone(user.id, body.timezone_offset)
-    if body.topic_id is None and body.assignment_id is None:raise HTTPException(422,"topic_required")
+    if body.topic_id is None and not body.all_topics and body.assignment_id is None:raise HTTPException(422,"topic_required")
+    if body.topic_id is not None and body.all_topics:raise HTTPException(422,"invalid_topic_scope")
     if body.topic_id is not None:
         topic=db.topic(user.id,body.topic_id)
         if not topic or topic["folder_id"]!=body.folder_id:raise HTTPException(422,"invalid_topic")

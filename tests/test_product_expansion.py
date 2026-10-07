@@ -75,6 +75,15 @@ def test_06_study_is_scoped_to_topic(tmp_path, monkeypatch):
     assert session["total"] == 1 and session["front"] == "two"
 
 
+def test_06b_study_can_shuffle_all_topics(tmp_path, monkeypatch):
+    database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Mixed")
+    one = database.topics(101, folder)[0]["id"]; two = database.create_topic(101, folder, "Two")
+    database.add_cards(101, folder, [("one", "один")], one); database.add_cards(101, folder, [("two", "два")], two)
+    session = client.post("/api/study", json={"folder_id": folder, "all_topics": True, "mode": "all"}).json()
+    assert session["total"] == 2 and session["front"] in {"one", "two"}
+    assert client.get(f"/api/study/unfinished?folder_id={folder}&all_topics=true").json()["id"] == session["id"]
+
+
 def test_07_invite_requires_explicit_acceptance(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Shared")
     token = client.post(f"/api/folders/{folder}/invites", json={"role": "member"}).json()["token"]

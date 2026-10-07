@@ -796,9 +796,10 @@ FROM invitations i JOIN folders f ON f.id=i.folder_id JOIN users owner ON owner.
     def stop_session(self,sid):
         with self.conn() as c:
             c.execute("UPDATE sessions SET current_card=NULL,answered=0,completed_at=COALESCE(completed_at,?) WHERE id=?",(datetime.now(timezone.utc).isoformat(),sid))
-    def unfinished_session(self,u,f,topic_id=None):
+    def unfinished_session(self,u,f,topic_id=None,all_topics=False):
         query="SELECT id FROM sessions WHERE user_id=? AND folder_id=? AND current_card IS NOT NULL AND completed_at IS NULL";params=[u,f]
-        if topic_id is not None:query+=" AND topic_id=?";params.append(topic_id)
+        if all_topics:query+=" AND topic_id IS NULL"
+        elif topic_id is not None:query+=" AND topic_id=?";params.append(topic_id)
         query+=" ORDER BY created_at DESC LIMIT 1"
         with self.conn() as c:return c.execute(query,params).fetchone()
 

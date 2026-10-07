@@ -3,6 +3,7 @@
 ## Product expansion v16
 
 - Folder content is organized as `Folder → Topic → Words`; a topic contains at most 30 words. Existing automatic topics are migrated losslessly to numbered “Тема 1”, “Тема 2” names and remain editable.
+- Study can shuffle words across every topic. Folders with up to 30 words skip the topic picker and start from the whole folder immediately.
 - Folder links use `https://t.me/<bot>?start=folder_<code>` and require an explicit accept/decline action. Access remains attached to the Telegram user and can be revoked by the owner.
 - Every user has a first-touch referral link. Self-referrals and reassignment are rejected.
 - Official Slovo sets are checked against `SLOVO_CHANNEL_ID` on every Mini App entry. Personal and shared folders are never locked.
