@@ -23,7 +23,7 @@ load_dotenv()
 
 PAGE_SIZE = 8
 MAX_CARDS_PER_FOLDER = 50
-MAX_CARDS_PER_TOPIC = 30
+MAX_CARDS_PER_TOPIC = 50
 ROLES = {"owner": "Владелец", "editor": "Редактор", "member": "Участник"}
 ROLE_LABELS = {
     "ru":{"owner":"Владелец","editor":"Редактор","member":"Участник"},
@@ -333,12 +333,17 @@ CREATE INDEX IF NOT EXISTS idx_catalog_cards_set ON catalog_cards(set_slug,posit
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_set_subscriptions(user_id,active,set_slug);
 CREATE INDEX IF NOT EXISTS idx_game_rounds_user ON game_rounds(user_id,folder_id,status,updated_at);
 CREATE INDEX IF NOT EXISTS idx_game_events_round ON game_events(round_id,id);
-DROP TRIGGER IF EXISTS limit_cards_per_folder;
 CREATE TRIGGER IF NOT EXISTS limit_cards_per_topic
 BEFORE INSERT ON cards
-WHEN NEW.topic_id IS NOT NULL AND (SELECT COUNT(*) FROM cards WHERE topic_id=NEW.topic_id) >= 30
+WHEN NEW.topic_id IS NOT NULL AND (SELECT COUNT(*) FROM cards WHERE topic_id=NEW.topic_id) >= 50
 BEGIN
  SELECT RAISE(ABORT,'topic_word_limit');
+END;
+CREATE TRIGGER IF NOT EXISTS limit_cards_per_folder
+BEFORE INSERT ON cards
+WHEN (SELECT COUNT(*) FROM cards WHERE folder_id=NEW.folder_id) >= 50
+BEGIN
+ SELECT RAISE(ABORT,'folder_word_limit');
 END;
 CREATE INDEX IF NOT EXISTS idx_topics_folder ON topics(folder_id,position,id);
 CREATE INDEX IF NOT EXISTS idx_cards_topic ON cards(topic_id,id);
@@ -379,7 +384,7 @@ CREATE INDEX IF NOT EXISTS idx_catalog_card_translations_language ON catalog_car
 acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
             for row in c.execute("SELECT telegram_id FROM users WHERE personal_ref_code IS NULL OR personal_ref_code='' ").fetchall():
                 c.execute("UPDATE users SET personal_ref_code=? WHERE telegram_id=?",(f"u{row['telegram_id']:x}",row['telegram_id']))
-            # Backfill old cards without losing data: system topics are chunked at 30 words.
+            # Backfill old cards without losing data: system topics follow the current limit.
             for folder in c.execute("SELECT id,owner_id FROM folders ORDER BY id").fetchall():
                 orphan_ids=[r[0] for r in c.execute("SELECT id FROM cards WHERE folder_id=? AND topic_id IS NULL ORDER BY id",(folder['id'],)).fetchall()]
                 for index in range(0,len(orphan_ids),MAX_CARDS_PER_TOPIC):
@@ -398,6 +403,8 @@ acquired_at=COALESCE(created_at,CURRENT_TIMESTAMP) WHERE acquired_at IS NULL""")
                             name=f'{base} ({suffix})';suffix+=1
                         c.execute("UPDATE topics SET name=? WHERE id=?",(name,row['id']))
                 c.execute("INSERT INTO schema_migrations(version) VALUES('005_topic_navigation')")
+            limit_path=Path(__file__).resolve().parent/'migrations'/'006_word_limits.sql'
+            if limit_path.exists():c.executescript(limit_path.read_text(encoding='utf-8'))
             c.execute("UPDATE folders SET is_official=1 WHERE id IN (SELECT folder_id FROM catalog_sets)")
 
     def user(self, tg_id, name="", telegram_avatar_url=None, ref_code='organic', acquisition_source='organic'):
@@ -674,6 +681,7 @@ EXISTS(SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assi
         inserted=[]
         try:
             with self.conn() as c:
+                if c.execute("SELECT COUNT(*) FROM cards WHERE folder_id=?",(f,)).fetchone()[0]+len(items)>MAX_CARDS_PER_FOLDER:raise ValueError('folder_word_limit')
                 explicit_topic=topic_id is not None
                 if explicit_topic:
                     topic=c.execute("SELECT folder_id,(SELECT COUNT(*) FROM cards WHERE topic_id=?) n FROM topics WHERE id=?",(topic_id,topic_id)).fetchone()
@@ -691,6 +699,7 @@ EXISTS(SELECT 1 FROM assignment_recipients ar JOIN assignments a ON a.id=ar.assi
                     term,tr=item[0],item[1]; extra=list(item[2:])+[None,None,None]
                     cur=c.execute("INSERT INTO cards(folder_id,topic_id,term,translation,transcription,example,example_translation,created_by) VALUES(?,?,?,?,?,?,?,?)",(f,topic_id,term,tr,extra[0],extra[1],extra[2],u));inserted.append(cur.lastrowid)
         except sqlite3.IntegrityError as exc:
+            if 'folder_word_limit' in str(exc):raise ValueError('folder_word_limit') from exc
             if 'topic_word_limit' in str(exc):raise ValueError('topic_word_limit') from exc
             raise
         return inserted

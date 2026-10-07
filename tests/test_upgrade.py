@@ -48,6 +48,7 @@ def test_migration_preserves_existing_cards(tmp_path):
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='003_learning_profile'").fetchone()
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='004_language_enrichment'").fetchone()
         assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='005_topic_navigation'").fetchone()
+        assert migrated.execute("SELECT 1 FROM schema_migrations WHERE version='006_word_limits'").fetchone()
         assert migrated.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_card_translations'").fetchone()
         assert migrated.execute("SELECT name FROM topics WHERE folder_id=1").fetchone()[0] == "Тема 1"
         assert migrated.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -84,7 +85,7 @@ def test_long_name_metadata_search_and_pagination(tmp_path, monkeypatch):
     assert [card["term"] for card in found["cards"]] == ["word 49"]
 
 
-def test_folder_splits_words_into_topics_of_at_most_30(tmp_path, monkeypatch):
+def test_folder_accepts_at_most_50_words(tmp_path, monkeypatch):
     database, client = setup_app(tmp_path, monkeypatch)
     folder = database.create_folder(1, "Limit")
     first_49 = [{"term": f"word {i}", "translation": f"перевод {i}"} for i in range(49)]
@@ -97,15 +98,22 @@ def test_folder_splits_words_into_topics_of_at_most_30(tmp_path, monkeypatch):
             {"term": "word 50", "translation": "перевод 50"},
         ]},
     )
-    assert more.status_code == 201
-    assert database.card_count(folder) == 51
-    assert [row["word_count"] for row in database.topics(1, folder)] == [30, 21]
+    assert more.status_code == 409
+    assert more.json()["detail"] == "folder_word_limit"
+    assert database.card_count(folder) == 49
+    assert [row["word_count"] for row in database.topics(1, folder)] == [49]
 
     assert client.post(
         f"/api/folders/{folder}/cards",
         json={"items": [{"term": "word 49", "translation": "перевод 49"}]},
     ).status_code == 201
-    assert database.card_count(folder) == 51
+    assert database.card_count(folder) == 50
+
+    assert client.post(
+        f"/api/folders/{folder}/cards",
+        json={"items": [{"term": "word 49", "translation": "перевод 49"}]},
+    ).status_code == 201
+    assert database.card_count(folder) == 50
 
 
 def test_card_transcription_and_cached_audio(tmp_path, monkeypatch):
@@ -286,7 +294,7 @@ def test_frontend_contains_loading_error_long_name_and_keyboard_guards():
     assert "pronunciationDetails:'Произношение'" in js and "learning-details" in css
     assert 'name="example"' not in js and 'name="example_translation"' not in js
     assert "caldera-tokens.css?v=15" in html
-    assert "styles.css?v=22" in html and "app.js?v=22" in html
+    assert "styles.css?v=23" in html and "app.js?v=23" in html
     assert "function renderTopic" in js and "class=\"breadcrumbs\"" in js
     assert "allTopicsMixed" in js and "folder.word_count<=30" in js
     assert "fonts.googleapis.com" not in html

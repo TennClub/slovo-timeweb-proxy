@@ -657,7 +657,7 @@ def create_cards(folder_id: int, body: CardsCreate, background_tasks:BackgroundT
     if accepted:
         try: inserted_ids = db.add_cards(user.id, folder_id, accepted,topic_id)
         except ValueError as exc:
-            if str(exc) in {"topic_word_limit","invalid_topic"}: raise HTTPException(409, str(exc)) from exc
+            if str(exc) in {"folder_word_limit","topic_word_limit","invalid_topic"}: raise HTTPException(409, str(exc)) from exc
             raise
         if os.getenv('LANGUAGE_ENRICHMENT_ENABLED','1')=='1':background_tasks.add_task(enrich_card_synonyms,inserted_ids)
         method = "single" if len(accepted) == 1 else "bulk"

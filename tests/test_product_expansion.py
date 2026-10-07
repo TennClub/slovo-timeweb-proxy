@@ -3,7 +3,7 @@ import sqlite3
 from fastapi.testclient import TestClient
 
 import webapp
-from slovo import DB, MAX_CARDS_PER_TOPIC
+from slovo import DB, MAX_CARDS_PER_FOLDER
 
 
 def setup(tmp_path, monkeypatch):
@@ -27,19 +27,24 @@ def test_01_new_folder_has_system_topic(tmp_path, monkeypatch):
     assert [(x["name"], x["is_system"]) for x in database.topics(101, folder["id"])] == [("Тема 1", 1)]
 
 
-def test_02_bulk_words_split_into_topics_without_loss(tmp_path, monkeypatch):
+def test_02_folder_accepts_50_words_and_rejects_more(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Bulk")
-    items = [{"term": f"w{i}", "translation": f"t{i}"} for i in range(65)]
+    items = [{"term": f"w{i}", "translation": f"t{i}"} for i in range(MAX_CARDS_PER_FOLDER)]
     assert client.post(f"/api/folders/{folder}/cards", json={"items": items}).status_code == 201
-    assert [x["word_count"] for x in database.topics(101, folder)] == [30, 30, 5]
+    assert [x["word_count"] for x in database.topics(101, folder)] == [50]
+    response = client.post(f"/api/folders/{folder}/cards", json={"items": [{"term": "overflow", "translation": "лишнее"}]})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "folder_word_limit"
+    assert database.card_count(folder) == 50
 
 
-def test_03_explicit_topic_has_strict_limit(tmp_path, monkeypatch):
+def test_03_explicit_topic_obeys_folder_limit(tmp_path, monkeypatch):
     database, client = setup(tmp_path, monkeypatch); folder = database.create_folder(101, "Limit")
     topic = database.topics(101, folder)[0]["id"]
-    items = [{"term": f"w{i}", "translation": f"t{i}"} for i in range(MAX_CARDS_PER_TOPIC + 1)]
+    items = [{"term": f"w{i}", "translation": f"t{i}"} for i in range(MAX_CARDS_PER_FOLDER + 1)]
     response = client.post(f"/api/folders/{folder}/cards", json={"topic_id": topic, "items": items})
-    assert response.status_code == 409 and database.card_count(folder) == 0
+    assert response.status_code == 409 and response.json()["detail"] == "folder_word_limit"
+    assert database.card_count(folder) == 0
 
 
 def test_04_create_and_rename_topic(tmp_path, monkeypatch):
